@@ -89,6 +89,16 @@ umbral_min = col3.number_input(
 )
 
 # =========================================================
+# Utilidad de formateo HH:MM:SS
+# =========================================================
+def fmt_hms_from_timedelta(td: pd.Timedelta) -> str:
+    total = int(td.total_seconds())
+    h = total // 3600
+    m = (total % 3600) // 60
+    s = total % 60
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+# =========================================================
 # Acción
 # =========================================================
 if st.button("Generar gráfico", type="primary"):
@@ -112,33 +122,25 @@ if st.button("Generar gráfico", type="primary"):
 
     # Detalle de tiempos muertos + descargas
     st.divider()
-    st.subheader("⏱️ Tiempos muertos detectados (> umbral)")
+    st.subheader("⏱️ Tiempos muertos detectados (≥ umbral)")
     st.write(
         f"Total: **{len(lista_gaps)} intervalos**, "
         f"sumando **{indicadores['perdido_no_programado']} min**"
     )
 
     if lista_gaps:
-        # ---------------------------
-        # Armar DataFrame base
-        # ---------------------------
-        df_gaps = pd.DataFrame(lista_gaps)  # columnas: Inicio, Fin, Duracion_min (minutos exactos, sin redondeo)
+        # Base con minutos exactos (sin redondeo) desde generar_reloj
+        df_gaps = pd.DataFrame(lista_gaps)  # Inicio, Fin, Duracion_min
 
-        # ---------------------------
-        # Duración en formato 00:00:00 para la TABLA
-        # ---------------------------
-        # Convertimos minutos (float) -> timedelta -> string HH:MM:SS
+        # ----- TABLA: Duración como HH:MM:SS (sin '0 days') -----
         td = pd.to_timedelta(df_gaps["Duracion_min"], unit="m")
         df_show = df_gaps.copy()
-        df_show["Duracion"] = td.apply(lambda x: str(x).split(".")[0])  # HH:MM:SS (sin milisegundos)
-        # Mostramos columnas limpias (sin Duracion_min para evitar confundir)
+        df_show["Duracion"] = td.apply(fmt_hms_from_timedelta)
         df_show = df_show[["Inicio", "Fin", "Duracion"]]
         st.dataframe(df_show, use_container_width=True)
 
-        # ---------------------------
-        # Descarga CSV (con HH:MM:SS)
-        # ---------------------------
-        csv_df = df_show.copy()  # ya tiene Duracion como HH:MM:SS
+        # ----- CSV: Duración como HH:MM:SS -----
+        csv_df = df_show.copy()  # ya tiene Duracion formateada
         csv_bytes = csv_df.to_csv(index=False).encode("utf-8")
         st.download_button(
             "📥 Descargar detalle (CSV)",
@@ -147,13 +149,10 @@ if st.button("Generar gráfico", type="primary"):
             mime="text/csv",
         )
 
-        # ---------------------------
-        # Descarga Excel (Duracion con formato [h]:mm:ss real)
-        # ---------------------------
-        # Para Excel, usamos valor numérico en días y aplicamos formato de hora
+        # ----- Excel: valor de tiempo + formato [h]:mm:ss -----
         xlsx_df = df_gaps.copy()
         xlsx_df["Duracion"] = pd.to_timedelta(xlsx_df["Duracion_min"], unit="m").dt.total_seconds() / 86400.0
-        xlsx_df = xlsx_df[["Inicio", "Fin", "Duracion"]]  # Duracion en días (Excel time)
+        xlsx_df = xlsx_df[["Inicio", "Fin", "Duracion"]]
 
         from io import BytesIO
         from openpyxl.utils import get_column_letter
@@ -161,15 +160,14 @@ if st.button("Generar gráfico", type="primary"):
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             xlsx_df.to_excel(writer, index=False, sheet_name="TiemposMuertos")
             ws = writer.book["TiemposMuertos"]
-            # Aplicar formato [h]:mm:ss a la columna Duracion (columna 3)
+            # Formato de tiempo para duraciones
             dur_col_letter = get_column_letter(3)
             for row in range(2, ws.max_row + 1):
                 ws[f"{dur_col_letter}{row}"].number_format = "[h]:mm:ss"
 
-            # Ajuste de ancho básico
-            ws.column_dimensions["A"].width = 10  # Inicio
-            ws.column_dimensions["B"].width = 10  # Fin
-            ws.column_dimensions["C"].width = 12  # Duracion
+            ws.column_dimensions["A"].width = 10
+            ws.column_dimensions["B"].width = 10
+            ws.column_dimensions["C"].width = 12
 
         st.download_button(
             "📥 Descargar detalle (Excel)",
