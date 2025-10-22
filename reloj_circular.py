@@ -33,7 +33,7 @@ def _merge_small_gaps(intervals, min_minutes=3.0):
     """
     Une segmentos contiguos/casi contiguos y descarta los que queden <= min_minutes.
     """
-    intervals = [(a, b) for a, b in intervals if (b - a).total_seconds() / 60.0 > min_minutes]
+    intervals = [(a, b) for a, b in intervals if (b - a).total_seconds() / 60.0 >= min_minutes]
     if not intervals:
         return []
     intervals.sort(key=lambda x: x[0])
@@ -45,7 +45,7 @@ def _merge_small_gaps(intervals, min_minutes=3.0):
             merged[-1] = (la, max(lb, b))
         else:
             merged.append((a, b))
-    merged = [(a, b) for a, b in merged if (b - a).total_seconds() / 60.0 > min_minutes]
+    merged = [(a, b) for a, b in merged if (b - a).total_seconds() / 60.0 >= min_minutes]
     return merged
 
 def _dt_to_angle(dt, start_dt, end_dt):
