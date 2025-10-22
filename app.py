@@ -198,7 +198,7 @@ def render_dia(fecha_dia):
         "📥 Descargar detalle (Excel)",
         data=excel_bytes,
         file_name=f"tiempos_muertos_{maquina_nombre}_{fecha_dia}.xlsx",
-        mime="application/octet-stream",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
     # === FIN EXPORTAR A EXCEL ===
