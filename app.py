@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import date
+from datetime import date, datetime, timedelta
 from reloj_circular import generar_reloj
 import matplotlib.pyplot as plt
 
@@ -122,6 +122,34 @@ def fmt_hms(td: pd.Timedelta):
     h, m, s = total // 3600, (total % 3600) // 60, total % 60
     return f"{h:02d}:{m:02d}:{s:02d}"
 
+# ===== Helper: suma del contador (Parcial > 0) en el turno seleccionado =====
+def contador_total_utilizado(df_base: pd.DataFrame, maquina_id: str, fecha_dia) -> float:
+    # límites del turno
+    weekday = fecha_dia.weekday()  # 0=lunes ... 4=viernes
+    inicio = datetime.combine(fecha_dia, datetime.strptime("06:00", "%H:%M").time())
+    fin = datetime.combine(fecha_dia, datetime.strptime("16:00", "%H:%M").time()) if weekday < 4 else \
+          datetime.combine(fecha_dia, datetime.strptime("15:00", "%H:%M").time())
+
+    d = df_base[(df_base["Id Equipo"] == maquina_id) &
+                (df_base["Fecha"].dt.date == fecha_dia)].copy()
+    if d.empty:
+        return 0.0
+
+    # recorte estricto al turno
+    d = d[(d["Fecha"] >= inicio) & (d["Fecha"] <= fin)]
+
+    # localizar columna 'Parcial' de forma robusta
+    parcial_col = None
+    for c in d.columns:
+        if "parcial" in str(c).strip().lower():
+            parcial_col = c
+            break
+    if parcial_col is None:
+        return 0.0
+
+    parc = pd.to_numeric(d[parcial_col], errors="coerce").fillna(0)
+    return float(parc[parc > 0].sum())
+
 def render_dia(fecha_dia):
     # generar_reloj sigue recibiendo el ID de equipo
     fig, indicadores, lista_gaps = generar_reloj(
@@ -142,28 +170,23 @@ def render_dia(fecha_dia):
         st.dataframe(df_gaps[["Inicio", "Fin", "Duracion"]], use_container_width=True)
 
     # === EXPORTAR A EXCEL (cambio mínimo con fallback) ===
-    # Se genera siempre el archivo (incluso si no hay filas), respetando formato [h]:mm:ss
     from io import BytesIO
     output = BytesIO()
 
-    # Preparar DataFrame para Excel con columnas fijas
     if not df_gaps.empty:
         dur_seconds = pd.to_timedelta(df_gaps["Duracion_min"], unit="m").dt.total_seconds()
         df_xlsx = pd.DataFrame({
             "Inicio": df_gaps["Inicio"],
             "Fin": df_gaps["Fin"],
-            # Excel guarda tiempos como fracción del día
-            "Duracion": (dur_seconds / 86400.0)
+            "Duracion": (dur_seconds / 86400.0)  # Excel: fracción del día
         })
     else:
         df_xlsx = pd.DataFrame(columns=["Inicio", "Fin", "Duracion"])
 
     try:
-        # Intento 1: openpyxl
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             df_xlsx.to_excel(writer, index=False, sheet_name="TiemposMuertos")
             ws = writer.book["TiemposMuertos"]
-            # Formato de tiempo en la tercera columna
             from openpyxl.utils import get_column_letter
             dur_col_letter = get_column_letter(3)
             for row in range(2, ws.max_row + 1):
@@ -173,7 +196,6 @@ def render_dia(fecha_dia):
             ws.column_dimensions["C"].width = 12
         excel_bytes = output.getvalue()
     except Exception:
-        # Fallback: xlsxwriter
         output = BytesIO()
         with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
             df_xlsx.to_excel(writer, index=False, sheet_name="TiemposMuertos")
@@ -194,18 +216,31 @@ def render_dia(fecha_dia):
     )
     # === FIN EXPORTAR A EXCEL ===
 
+    # 🔢 Nuevo: contador total utilizado (Parcial > 0)
+    total_contador = contador_total_utilizado(df, maquina_id, fecha_dia)
+
+    # Devolvemos todos los campos para el resumen consolidado
     return {
         "Fecha": fecha_dia,
-        "%_Perdido": indicadores["porcentaje_perdido"]
+        "Total disponible (min)": indicadores["total_disponible"],
+        "Pausas programadas (min)": indicadores["inutilizado_programado"],
+        "No programadas (min)": indicadores["perdido_no_programado"],
+        "%_Perdido": indicadores["porcentaje_perdido"],
+        "Contador total (parcial>0)": total_contador,
     }
 
 def resumen_solo(fecha_dia):
     _, indicadores, _ = generar_reloj(
         df, maquina_id, fecha_dia, umbral_minutos=umbral_min
     )
+    total_contador = contador_total_utilizado(df, maquina_id, fecha_dia)
     return {
         "Fecha": fecha_dia,
-        "%_Perdido": indicadores["porcentaje_perdido"]
+        "Total disponible (min)": indicadores["total_disponible"],
+        "Pausas programadas (min)": indicadores["inutilizado_programado"],
+        "No programadas (min)": indicadores["perdido_no_programado"],
+        "%_Perdido": indicadores["porcentaje_perdido"],
+        "Contador total (parcial>0)": total_contador,
     }
 
 if st.button("Generar gráfico(s)", type="primary", use_container_width=True):
