@@ -93,6 +93,26 @@ def generar_reloj(df, maquina_id, fecha, umbral_minutos=3):
     # 🔒 Filtro ESTRICTO al rango del turno
     df_dia = df_dia[(df_dia["Fecha"] >= inicio_dt) & (df_dia["Fecha"] <= fin_dt)]
 
+    # ✅ NUEVO: ignorar filas con "Parcial == 0" de forma robusta
+    parcial_col = None
+    for c in df_dia.columns:
+        if "parcial" in str(c).strip().lower():
+            parcial_col = c
+            break
+    if parcial_col is not None:
+        parc = pd.to_numeric(df_dia[parcial_col], errors="coerce").fillna(0)
+        df_dia = df_dia[parc > 0]
+
+    # Si luego del filtro no quedan eventos, devolver estado controlado
+    if df_dia.empty:
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.axis("off")
+        ax.text(0.5, 0.5, "Sin eventos para la combinación seleccionada",
+                ha="center", va="center")
+        indicadores = dict(total_disponible=0, inutilizado_programado=0, neto=0,
+                           perdido_no_programado=0, porcentaje_perdido=0)
+        return fig, indicadores, []
+
     # ---------------- Candidatos de gap (>= umbral) ----------------
     eventos = [inicio_dt] + list(df_dia["Fecha"]) + [fin_dt]
     candidatos = []
@@ -138,7 +158,7 @@ def generar_reloj(df, maquina_id, fecha, umbral_minutos=3):
     ]
 
     # ---------------- Gráfico polar ----------------
-    fig = plt.figure(figsize=(6, 4.5), facecolor="white")  # ÚNICO cambio solicitado: tamaño
+    fig = plt.figure(figsize=(6, 4.5), facecolor="white")  # ÚNICO cambio solicitado en su momento: tamaño
     ax = plt.subplot(111, polar=True)
     ax.set_theta_direction(-1)
     ax.set_theta_offset(np.pi / 2)
