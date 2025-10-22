@@ -76,9 +76,19 @@ def generar_reloj(df, maquina_id, fecha, umbral_minutos=3):
     # ---------------- Filtrado y normalización ----------------
     df_dia = df[(df["Id Equipo"] == maquina_id) & (df["Fecha"].dt.date == fecha)].copy()
 
-    # ✅ NUEVO: Ignorar filas donde el parcial sea 0
-    if "Parcial" in df_dia.columns:
-        df_dia = df_dia[df_dia["Parcial"] > 0]
+    # ✅ ROBUSTO: encontrar la columna "Parcial" sin depender del nombre exacto
+    parcial_col = None
+    for c in df_dia.columns:
+        cl = str(c).strip().lower()
+        # buscamos 'parcial' en el nombre de la columna
+        if "parcial" in cl:
+            parcial_col = c
+            break
+
+    if parcial_col is not None:
+        # convertir a numérico, NaN -> 0 y filtrar estrictamente > 0
+        parc = pd.to_numeric(df_dia[parcial_col], errors="coerce").fillna(0)
+        df_dia = df_dia[parc > 0]
 
     if df_dia.empty:
         # Estado controlado sin datos
@@ -90,7 +100,9 @@ def generar_reloj(df, maquina_id, fecha, umbral_minutos=3):
         return fig, indicadores, []
 
     df_dia = df_dia.sort_values("Fecha").reset_index(drop=True)
+    # importante: conservar segundos (nada de redondear a minuto)
     df_dia["Fecha"] = pd.to_datetime(df_dia["Fecha"], errors="coerce").dt.floor("s")
+    # quitar duplicados exactos de timestamp
     df_dia = df_dia.drop_duplicates(subset=["Fecha"])
 
     # ---------------- Candidatos de gap (> umbral) ----------------
