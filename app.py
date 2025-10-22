@@ -169,7 +169,7 @@ def render_dia(fecha_dia):
         df_gaps["Duracion"] = pd.to_timedelta(df_gaps["Duracion_min"], unit="m").apply(fmt_hms)
         st.dataframe(df_gaps[["Inicio", "Fin", "Duracion"]], use_container_width=True)
 
-    # === EXPORTAR A EXCEL (cambio mínimo con fallback) ===
+    # === EXPORTAR A EXCEL (descarga garantizada con xlsxwriter) ===
     from io import BytesIO
     output = BytesIO()
 
@@ -183,29 +183,16 @@ def render_dia(fecha_dia):
     else:
         df_xlsx = pd.DataFrame(columns=["Inicio", "Fin", "Duracion"])
 
-    try:
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            df_xlsx.to_excel(writer, index=False, sheet_name="TiemposMuertos")
-            ws = writer.book["TiemposMuertos"]
-            from openpyxl.utils import get_column_letter
-            dur_col_letter = get_column_letter(3)
-            for row in range(2, ws.max_row + 1):
-                ws[f"{dur_col_letter}{row}"].number_format = "[h]:mm:ss"
-            ws.column_dimensions["A"].width = 10
-            ws.column_dimensions["B"].width = 10
-            ws.column_dimensions["C"].width = 12
-        excel_bytes = output.getvalue()
-    except Exception:
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-            df_xlsx.to_excel(writer, index=False, sheet_name="TiemposMuertos")
-            workbook  = writer.book
-            worksheet = writer.sheets["TiemposMuertos"]
-            time_fmt = workbook.add_format({"num_format": "[h]:mm:ss"})
-            worksheet.set_column(0, 0, 10)             # A: Inicio
-            worksheet.set_column(1, 1, 10)             # B: Fin
-            worksheet.set_column(2, 2, 12, time_fmt)   # C: Duracion
-        excel_bytes = output.getvalue()
+    # Forzamos xlsxwriter para evitar problemas de entorno
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        df_xlsx.to_excel(writer, index=False, sheet_name="TiemposMuertos")
+        workbook  = writer.book
+        worksheet = writer.sheets["TiemposMuertos"]
+        time_fmt = workbook.add_format({"num_format": "[h]:mm:ss"})
+        worksheet.set_column(0, 0, 10)             # A: Inicio
+        worksheet.set_column(1, 1, 10)             # B: Fin
+        worksheet.set_column(2, 2, 12, time_fmt)   # C: Duracion
+    excel_bytes = output.getvalue()
 
     st.download_button(
         "📥 Descargar detalle (Excel)",
@@ -216,7 +203,7 @@ def render_dia(fecha_dia):
     )
     # === FIN EXPORTAR A EXCEL ===
 
-    # 🔢 Nuevo: contador total utilizado (Parcial > 0)
+    # 🔢 Contador total utilizado (Parcial > 0)
     total_contador = contador_total_utilizado(df, maquina_id, fecha_dia)
 
     # Devolvemos todos los campos para el resumen consolidado
