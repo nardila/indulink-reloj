@@ -141,6 +141,59 @@ def render_dia(fecha_dia):
         df_gaps["Duracion"] = pd.to_timedelta(df_gaps["Duracion_min"], unit="m").apply(fmt_hms)
         st.dataframe(df_gaps[["Inicio", "Fin", "Duracion"]], use_container_width=True)
 
+    # === EXPORTAR A EXCEL (cambio mínimo con fallback) ===
+    # Se genera siempre el archivo (incluso si no hay filas), respetando formato [h]:mm:ss
+    from io import BytesIO
+    output = BytesIO()
+
+    # Preparar DataFrame para Excel con columnas fijas
+    if not df_gaps.empty:
+        dur_seconds = pd.to_timedelta(df_gaps["Duracion_min"], unit="m").dt.total_seconds()
+        df_xlsx = pd.DataFrame({
+            "Inicio": df_gaps["Inicio"],
+            "Fin": df_gaps["Fin"],
+            # Excel guarda tiempos como fracción del día
+            "Duracion": (dur_seconds / 86400.0)
+        })
+    else:
+        df_xlsx = pd.DataFrame(columns=["Inicio", "Fin", "Duracion"])
+
+    try:
+        # Intento 1: openpyxl
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            df_xlsx.to_excel(writer, index=False, sheet_name="TiemposMuertos")
+            ws = writer.book["TiemposMuertos"]
+            # Formato de tiempo en la tercera columna
+            from openpyxl.utils import get_column_letter
+            dur_col_letter = get_column_letter(3)
+            for row in range(2, ws.max_row + 1):
+                ws[f"{dur_col_letter}{row}"].number_format = "[h]:mm:ss"
+            ws.column_dimensions["A"].width = 10
+            ws.column_dimensions["B"].width = 10
+            ws.column_dimensions["C"].width = 12
+        excel_bytes = output.getvalue()
+    except Exception:
+        # Fallback: xlsxwriter
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+            df_xlsx.to_excel(writer, index=False, sheet_name="TiemposMuertos")
+            workbook  = writer.book
+            worksheet = writer.sheets["TiemposMuertos"]
+            time_fmt = workbook.add_format({"num_format": "[h]:mm:ss"})
+            worksheet.set_column(0, 0, 10)             # A: Inicio
+            worksheet.set_column(1, 1, 10)             # B: Fin
+            worksheet.set_column(2, 2, 12, time_fmt)   # C: Duracion
+        excel_bytes = output.getvalue()
+
+    st.download_button(
+        "📥 Descargar detalle (Excel)",
+        data=excel_bytes,
+        file_name=f"tiempos_muertos_{maquina_nombre}_{fecha_dia}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
+    # === FIN EXPORTAR A EXCEL ===
+
     return {
         "Fecha": fecha_dia,
         "%_Perdido": indicadores["porcentaje_perdido"]
