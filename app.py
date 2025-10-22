@@ -45,7 +45,48 @@ def normalizar_columnas(df: pd.DataFrame) -> pd.DataFrame:
     df = df.rename(columns=rename_map)
     if "Fecha" not in df.columns or "Id Equipo" not in df.columns:
         raise ValueError("No se encuentran las columnas requeridas: 'Fecha' y 'Id Equipo'.")
-    df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce", dayfirst=True)
+
+    # --- Parseo robusto de fechas (soporta ISO, day-first y serial de Excel) ---
+    col_fecha = df["Fecha"]
+
+    if pd.api.types.is_datetime64_any_dtype(col_fecha):
+        # ya es datetime, no hacemos nada
+        pass
+    else:
+        # 1) intento estándar (ISO / infer)
+        f0 = pd.to_datetime(col_fecha, errors="coerce", infer_datetime_format=True)
+
+        # 2) completar con dayfirst=True donde haya NaT
+        mask_nat = f0.isna()
+        if mask_nat.any():
+            f1 = pd.to_datetime(
+                col_fecha[mask_nat], errors="coerce", dayfirst=True, infer_datetime_format=True
+            )
+            f0.loc[mask_nat] = f1
+
+        # 3) si aún quedan NaT y la columna admite numéricos -> serial de Excel
+        mask_nat = f0.isna()
+        if mask_nat.any():
+            try:
+                numeric = pd.to_numeric(col_fecha[mask_nat], errors="coerce")
+                have_num = numeric.notna()
+                if have_num.any():
+                    f2 = pd.to_datetime(
+                        numeric[have_num],
+                        unit="d",
+                        origin="1899-12-30",
+                        errors="coerce",
+                    )
+                    # alinear índices correctamente
+                    idx_nat = col_fecha[mask_nat].index
+                    idx_fill = idx_nat[have_num]
+                    f0.loc[idx_fill] = f2
+            except Exception:
+                pass
+
+        df["Fecha"] = f0
+
+    # Aseguramos Id Equipo como string limpio
     df["Id Equipo"] = df["Id Equipo"].astype(str).str.strip()
     return df
 
