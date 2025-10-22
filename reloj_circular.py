@@ -31,7 +31,8 @@ def _interval_subtract(base_interval, cut_interval):
 
 def _merge_small_gaps(intervals, min_minutes=3.0):
     """
-    Une segmentos contiguos/casi contiguos y descarta los que queden <= min_minutes.
+    Une segmentos que se superponen y descarta los que queden <= min_minutes.
+    (Ya NO une gaps contiguos: cada uno se mantiene separado)
     """
     intervals = [(a, b) for a, b in intervals if (b - a).total_seconds() / 60.0 >= min_minutes]
     if not intervals:
@@ -40,8 +41,8 @@ def _merge_small_gaps(intervals, min_minutes=3.0):
     merged = [intervals[0]]
     for a, b in intervals[1:]:
         la, lb = merged[-1]
-        # Unir si están pegados o con micro hueco <= 10s
-        if (a - lb).total_seconds() <= 10:
+        # ✅ Ahora solo une si se superponen (no si están pegados)
+        if a < lb:
             merged[-1] = (la, max(lb, b))
         else:
             merged.append((a, b))
@@ -66,11 +67,11 @@ def generar_reloj(df, maquina_id, fecha, umbral_minutos=3):
       - indicadores: métricas del día
       - lista_gaps: detalle de intervalos de tiempo muerto (> umbral) con inicio, fin y duración (min)
 
-    Reglas (idénticas a tu pedido):
+    Reglas:
       - Turno: Lun–Jue 06:00–16:00, Vie 06:00–15:00
       - Pausas programadas: 08:00–08:20, 12:00–12:40 y últimos 20 min del turno (limpieza)
       - Crea eventos teóricos a las 06:00 y al cierre (15:00/16:00)
-      - Gaps >= umbral (cuenta 3.0 min exactos)
+      - Gaps >= umbral
       - Las pausas NO planificadas NO se marcan dentro de pausas programadas (se recortan)
     """
     # ---------------- Turno por día ----------------
@@ -85,14 +86,13 @@ def generar_reloj(df, maquina_id, fecha, umbral_minutos=3):
                 _combine(pd.to_datetime(fecha), _parse_hhmm("08:20")))
     almuerzo = (_combine(pd.to_datetime(fecha), _parse_hhmm("12:00")),
                 _combine(pd.to_datetime(fecha), _parse_hhmm("12:40")))
-    limpieza = (fin_dt - timedelta(minutes=20), fin_dt)  # últimos 20 min del turno
+    limpieza = (fin_dt - timedelta(minutes=20), fin_dt)
 
     pausas = [("Desayuno", *desayuno), ("Almuerzo", *almuerzo), ("Limpieza", *limpieza)]
 
     # ---------------- Filtrado y normalización ----------------
     df_dia = df[(df["Id Equipo"] == maquina_id) & (df["Fecha"].dt.date == fecha)].copy()
     if df_dia.empty:
-        # Estado controlado sin datos
         fig, ax = plt.subplots(figsize=(8, 5))
         ax.axis("off")
         ax.text(0.5, 0.5, "Sin eventos para la combinación seleccionada", ha="center", va="center")
@@ -102,23 +102,18 @@ def generar_reloj(df, maquina_id, fecha, umbral_minutos=3):
 
     df_dia = df_dia.sort_values("Fecha").reset_index(drop=True)
     df_dia["Fecha"] = pd.to_datetime(df_dia["Fecha"], errors="coerce").dt.floor("min")
-    # Quitamos duplicados exactos de timestamp para evitar micro-gaps falsos
     df_dia = df_dia.drop_duplicates(subset=["Fecha"])
-
-    # ⬇️ Filtro para acotar estrictamente al rango del turno (evita gaps post 16:00/15:00)
     df_dia = df_dia[(df_dia["Fecha"] >= inicio_dt) & (df_dia["Fecha"] <= fin_dt)]
 
     # ---------------- Candidatos de gap (>= umbral) ----------------
-    # Incluimos arranque y cierre teóricos
     eventos = [inicio_dt] + list(df_dia["Fecha"]) + [fin_dt]
     candidatos = []
     for i in range(len(eventos) - 1):
         a, b = eventos[i], eventos[i + 1]
-        # ÚNICO CAMBIO: ahora contamos gaps de duración exactamente igual al umbral
         if (b - a).total_seconds() / 60.0 >= umbral_minutos:
             candidatos.append((a, b))
 
-    # ---------------- Restar pausas programadas de los candidatos ----------------
+    # ---------------- Restar pausas programadas ----------------
     unplanned = candidatos[:]
     for _, ps, pe in pausas:
         nuevos = []
@@ -126,7 +121,6 @@ def generar_reloj(df, maquina_id, fecha, umbral_minutos=3):
             nuevos.extend(_interval_subtract(seg, (ps, pe)))
         unplanned = nuevos
 
-    # Unimos y filtramos segmentos residuales pequeños
     unplanned = _merge_small_gaps(unplanned, min_minutes=umbral_minutos)
 
     # ---------------- Indicadores ----------------
@@ -144,7 +138,7 @@ def generar_reloj(df, maquina_id, fecha, umbral_minutos=3):
         porcentaje_perdido=round(porcentaje_perdido, 2),
     )
 
-    # ---------------- Listado detallado de tiempos muertos ----------------
+    # ---------------- Listado detallado ----------------
     lista_gaps = [
         dict(
             Inicio=a.strftime("%H:%M"),
@@ -154,7 +148,7 @@ def generar_reloj(df, maquina_id, fecha, umbral_minutos=3):
         for a, b in unplanned
     ]
 
-    # ---------------- Gráfico polar (mismo estilo que venías usando) ----------------
+    # ---------------- Gráfico polar ----------------
     fig = plt.figure(figsize=(11.5, 8), facecolor="white")
     ax = plt.subplot(111, polar=True)
     ax.set_theta_direction(-1)
@@ -163,39 +157,35 @@ def generar_reloj(df, maquina_id, fecha, umbral_minutos=3):
     ax.set_yticklabels([])
     ax.set_xticklabels([])
 
-    # Pausas programadas en azul (con borde)
+    # Pausas programadas (azul)
     for nombre, ps, pe in pausas:
         ang0 = _dt_to_angle(ps, inicio_dt, fin_dt)
         ang1 = _dt_to_angle(pe, inicio_dt, fin_dt)
         if ang1 > ang0:
-            ax.barh(
-                1.0, width=ang1 - ang0, left=ang0, height=0.10,
-                color="royalblue", alpha=0.8, edgecolor="black", linewidth=0.5
-            )
-            ax.text(ang0 + (ang1 - ang0) / 2, 1.12, nombre, ha="center", va="center", fontsize=9)
+            ax.barh(1.0, width=ang1 - ang0, left=ang0, height=0.10,
+                    color="royalblue", alpha=0.8, edgecolor="black", linewidth=0.5)
+            ax.text(ang0 + (ang1 - ang0) / 2, 1.12, nombre,
+                    ha="center", va="center", fontsize=9)
 
-    # No planificadas en rojo con borde negro
+    # No planificadas (rojo)
     for a, b in unplanned:
         ang0 = _dt_to_angle(a, inicio_dt, fin_dt)
         ang1 = _dt_to_angle(b, inicio_dt, fin_dt)
         if ang1 > ang0:
-            ax.barh(
-                1.0, width=ang1 - ang0, left=ang0, height=0.10,
-                color="red", alpha=0.85, edgecolor="black", linewidth=0.8
-            )
+            ax.barh(1.0, width=ang1 - ang0, left=ang0, height=0.10,
+                    color="red", alpha=0.85, edgecolor="black", linewidth=0.8)
 
-    # Radiales de hora + etiquetas (06:00 hasta cierre)
+    # Radiales
     h = inicio_dt.replace(minute=0, second=0)
     if h < inicio_dt:
         h += timedelta(hours=1)
     while h <= fin_dt:
         ang = _dt_to_angle(h, inicio_dt, fin_dt)
         ax.plot([ang, ang], [0, 1.1], color="#888888", linewidth=1)
-        ax.text(ang, 1.35, h.strftime("%H:00"), ha="center", va="center",
-                fontsize=10, fontweight="bold", color="black")
+        ax.text(ang, 1.35, h.strftime("%H:00"), ha="center",
+                va="center", fontsize=10, fontweight="bold", color="black")
         h += timedelta(hours=1)
 
-    # Título
     ax.set_title(
         f"Reloj Circular de Tiempos Muertos – Máquina {maquina_id} – {inicio_dt.date()}",
         va="bottom", fontsize=14, fontweight="bold"
