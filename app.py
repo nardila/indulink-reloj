@@ -19,6 +19,18 @@ SHEET_EXPORT_URL = (
 )
 
 # =========================================================
+# Mapeo nombre ↔ ID de máquina (para UI amigable)
+# =========================================================
+MACHINE_NAME_TO_ID = {
+    "Seccionadora": "4C4F686CDDA0",
+    "Centro de Mecanizado 1": "84EA676CDDA0",
+    "Centro de Mecanizado 2": "98D1676CDDA0",
+    "Pegadora 1": "3C75A0C964EC",
+    "Pegadora 2": "8C6EA51FB608",
+}
+ID_TO_MACHINE_NAME = {v: k for k, v in MACHINE_NAME_TO_ID.items()}
+
+# =========================================================
 # Carga de datos
 # =========================================================
 @st.cache_data(show_spinner=False)
@@ -44,7 +56,6 @@ def normalizar_columnas(df: pd.DataFrame) -> pd.DataFrame:
     df = df.rename(columns=rename_map)
     if "Fecha" not in df.columns or "Id Equipo" not in df.columns:
         raise ValueError("No se encuentran las columnas requeridas: 'Fecha' y 'Id Equipo'.")
-
     df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce", infer_datetime_format=True)
     df["Id Equipo"] = df["Id Equipo"].astype(str).str.strip()
     return df
@@ -56,14 +67,31 @@ df = normalizar_columnas(raw)
 # =========================================================
 # Interfaz
 # =========================================================
-maquinas = sorted(df["Id Equipo"].dropna().unique())
+# IDs que realmente existen en los datos
+ids_en_datos = sorted(df["Id Equipo"].dropna().unique())
+
+# Construimos lista visible de nombres:
+# 1) Primero los nombres mapeados que estén en los datos
+nombres_disponibles = [name for name, mid in MACHINE_NAME_TO_ID.items() if mid in ids_en_datos]
+# 2) Si hay IDs en los datos que no estén en el mapeo, los agregamos como “Código: <id>”
+extras = [f"Código: {mid}" for mid in ids_en_datos if mid not in MACHINE_NAME_TO_ID.values()]
+opciones_maquina = nombres_disponibles + extras
+
 col_top1, col_top2, col_top3 = st.columns([1, 1, 1])
-maquina_sel = col_top1.selectbox("Máquina", maquinas, index=0)
+maquina_vis = col_top1.selectbox("Máquina", opciones_maquina, index=0)
+
+# Resolvemos el ID según lo elegido
+if maquina_vis.startswith("Código: "):
+    maquina_id = maquina_vis.replace("Código: ", "").strip()
+    maquina_nombre = ID_TO_MACHINE_NAME.get(maquina_id, maquina_id)
+else:
+    maquina_id = MACHINE_NAME_TO_ID.get(maquina_vis, maquina_vis)
+    maquina_nombre = maquina_vis
 
 fechas_disponibles = sorted(pd.Series(df["Fecha"].dt.date.dropna().unique()).tolist())
 modo_multiple = col_top2.toggle("Seleccionar múltiples fechas", value=False)
 
-# Toggle para mostrar o no los gráficos individuales
+# Toggle para mostrar o no los gráficos individuales (solo aplica en múltiple)
 mostrar_detalle = True
 if modo_multiple:
     mostrar_detalle = col_top3.toggle(
@@ -95,8 +123,9 @@ def fmt_hms(td: pd.Timedelta):
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 def render_dia(fecha_dia):
+    # generar_reloj sigue recibiendo el ID de equipo
     fig, indicadores, lista_gaps = generar_reloj(
-        df, maquina_sel, fecha_dia, umbral_minutos=umbral_min
+        df, maquina_id, fecha_dia, umbral_minutos=umbral_min
     )
     st.pyplot(fig, use_container_width=True)
 
@@ -119,7 +148,7 @@ def render_dia(fecha_dia):
 
 def resumen_solo(fecha_dia):
     _, indicadores, _ = generar_reloj(
-        df, maquina_sel, fecha_dia, umbral_minutos=umbral_min
+        df, maquina_id, fecha_dia, umbral_minutos=umbral_min
     )
     return {
         "Fecha": fecha_dia,
@@ -127,6 +156,7 @@ def resumen_solo(fecha_dia):
     }
 
 if st.button("Generar gráfico(s)", type="primary", use_container_width=True):
+    st.caption(f"Máquina seleccionada: **{maquina_nombre}**  ·  ID: `{maquina_id}`")
     resumen = []
 
     for f in fechas_seleccionadas:
@@ -141,8 +171,7 @@ if st.button("Generar gráfico(s)", type="primary", use_container_width=True):
 
     if len(resumen) > 1:
         st.subheader("📈 Resumen de días seleccionados")
-        df_res = pd.DataFrame(resumen)
-        df_res = df_res.sort_values("Fecha")
+        df_res = pd.DataFrame(resumen).sort_values("Fecha")
         st.dataframe(df_res, use_container_width=True)
 
         # 📉 Gráfico histórico (% Perdido)
@@ -159,7 +188,7 @@ if st.button("Generar gráfico(s)", type="primary", use_container_width=True):
         ax.set_xticklabels(labels, rotation=45, ha="right")
         ax.grid(True, alpha=0.3)
 
-        # 🔹 Etiquetas con fuente más chica (7 en vez de 9)
+        # Etiquetas (fuente 7 y margen 7% del máximo)
         for i, y in enumerate(df_res["%_Perdido"]):
             ax.text(
                 i, y + (df_res["%_Perdido"].max() * 0.07),
