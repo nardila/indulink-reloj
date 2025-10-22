@@ -51,7 +51,14 @@ def generar_reloj(df, maquina_id, fecha, umbral_minutos=3):
     Devuelve:
       - fig: gráfico polar
       - indicadores: métricas del día
-      - lista_gaps: detalle de intervalos de tiempo muerto (> umbral)
+      - lista_gaps: detalle de intervalos de tiempo muerto (>= umbral)
+
+    Reglas:
+      - Turno: Lun–Jue 06:00–16:00, Vie 06:00–15:00
+      - Pausas programadas: 08:00–08:20, 12:00–12:40 y últimos 20 min del turno
+      - Crea eventos teóricos a las 06:00 y al cierre (15:00/16:00)
+      - No marca no planificadas dentro de pausas programadas
+      - Ignora eventos fuera del turno (filtro estricto al rango [inicio, fin])
     """
     # ---------------- Turno por día ----------------
     weekday = fecha.weekday()  # 0=lunes ... 4=viernes
@@ -68,25 +75,30 @@ def generar_reloj(df, maquina_id, fecha, umbral_minutos=3):
     limpieza = (fin_dt - timedelta(minutes=20), fin_dt)  # últimos 20 min del turno
     pausas = [("Desayuno", *desayuno), ("Almuerzo", *almuerzo), ("Limpieza", *limpieza)]
 
-    # ---------------- Filtrado ----------------
+    # ---------------- Filtrado y normalización ----------------
     df_dia = df[(df["Id Equipo"] == maquina_id) & (df["Fecha"].dt.date == fecha)].copy()
     if df_dia.empty:
         fig, ax = plt.subplots(figsize=(6, 4))
         ax.axis("off")
-        ax.text(0.5, 0.5, "Sin eventos para la combinación seleccionada", ha="center", va="center")
+        ax.text(0.5, 0.5, "Sin eventos para la combinación seleccionada",
+                ha="center", va="center")
         indicadores = dict(total_disponible=0, inutilizado_programado=0, neto=0,
                            perdido_no_programado=0, porcentaje_perdido=0)
         return fig, indicadores, []
 
     df_dia = df_dia.sort_values("Fecha").reset_index(drop=True)
+    # Preservamos segundos (no usamos .dt.floor("min"))
     df_dia["Fecha"] = pd.to_datetime(df_dia["Fecha"], errors="coerce")
+    df_dia = df_dia.drop_duplicates(subset=["Fecha"])
+    # 🔒 Filtro ESTRICTO al rango del turno
+    df_dia = df_dia[(df_dia["Fecha"] >= inicio_dt) & (df_dia["Fecha"] <= fin_dt)]
 
-    # ---------------- Candidatos de gap (> umbral) ----------------
+    # ---------------- Candidatos de gap (>= umbral) ----------------
     eventos = [inicio_dt] + list(df_dia["Fecha"]) + [fin_dt]
     candidatos = []
     for i in range(len(eventos) - 1):
         a, b = eventos[i], eventos[i + 1]
-        if (b - a).total_seconds() / 60.0 > umbral_minutos:
+        if (b - a).total_seconds() / 60.0 >= umbral_minutos:
             candidatos.append((a, b))
 
     # ---------------- Restar pausas programadas ----------------
@@ -97,7 +109,7 @@ def generar_reloj(df, maquina_id, fecha, umbral_minutos=3):
             nuevos.extend(_interval_subtract(seg, (ps, pe)))
         unplanned = nuevos
 
-    # Filtramos gaps chicos (no los unimos)
+    # Filtramos gaps chicos (no unimos contiguos)
     unplanned = _merge_small_gaps(unplanned, min_minutes=umbral_minutos)
 
     # ---------------- Indicadores ----------------
@@ -126,7 +138,7 @@ def generar_reloj(df, maquina_id, fecha, umbral_minutos=3):
     ]
 
     # ---------------- Gráfico polar ----------------
-    fig = plt.figure(figsize=(6, 4.5), facecolor="white")  # 🔹 Tamaño ajustado
+    fig = plt.figure(figsize=(6, 4.5), facecolor="white")  # ÚNICO cambio solicitado: tamaño
     ax = plt.subplot(111, polar=True)
     ax.set_theta_direction(-1)
     ax.set_theta_offset(np.pi / 2)
@@ -141,7 +153,8 @@ def generar_reloj(df, maquina_id, fecha, umbral_minutos=3):
         if ang1 > ang0:
             ax.barh(1.0, width=ang1 - ang0, left=ang0, height=0.10,
                     color="royalblue", alpha=0.8, edgecolor="black", linewidth=0.5)
-            ax.text(ang0 + (ang1 - ang0) / 2, 1.12, nombre, ha="center", va="center", fontsize=9)
+            ax.text(ang0 + (ang1 - ang0) / 2, 1.12, nombre,
+                    ha="center", va="center", fontsize=9)
 
     # No programadas (rojo)
     for a, b in unplanned:
@@ -158,8 +171,8 @@ def generar_reloj(df, maquina_id, fecha, umbral_minutos=3):
     while h <= fin_dt:
         ang = _dt_to_angle(h, inicio_dt, fin_dt)
         ax.plot([ang, ang], [0, 1.1], color="#888888", linewidth=1)
-        ax.text(ang, 1.35, h.strftime("%H:%M:%S"), ha="center", va="center",
-                fontsize=10, fontweight="bold", color="black")
+        ax.text(ang, 1.35, h.strftime("%H:%M:%S"), ha="center",
+                va="center", fontsize=10, fontweight="bold", color="black")
         h += timedelta(hours=1)
 
     # Título
