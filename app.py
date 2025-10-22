@@ -22,15 +22,11 @@ SHEET_EXPORT_URL = (
 # =========================================================
 @st.cache_data(show_spinner=False)
 def cargar_excel_desde_sheet(url: str) -> pd.DataFrame:
-    # En el Sheet los encabezados reales están en la fila 2 → header=1
     df = pd.read_excel(url, sheet_name=0, engine="openpyxl", header=1)
     return df
 
 def normalizar_columnas(df: pd.DataFrame) -> pd.DataFrame:
-    # Limpieza básica de encabezados
     df.columns = [str(c).strip() for c in df.columns]
-
-    # Mapear alias a nombres canónicos
     rename_map = {}
     for c in df.columns:
         cl = (
@@ -46,15 +42,12 @@ def normalizar_columnas(df: pd.DataFrame) -> pd.DataFrame:
             rename_map[c] = "Id Equipo"
 
     df = df.rename(columns=rename_map)
-
     if "Fecha" not in df.columns or "Id Equipo" not in df.columns:
         raise ValueError("No se encuentran las columnas requeridas: 'Fecha' y 'Id Equipo'.")
-
     df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce", dayfirst=True)
     df["Id Equipo"] = df["Id Equipo"].astype(str).str.strip()
     return df
 
-# Descargar y preparar datos
 with st.spinner("Cargando datos de Google Sheets..."):
     raw = cargar_excel_desde_sheet(SHEET_EXPORT_URL)
 
@@ -114,33 +107,29 @@ if st.button("Generar gráfico", type="primary"):
     st.divider()
     st.subheader("📋 Indicadores del día")
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Total disponible (min)", indicadores["total_disponible"])
-    c2.metric("Inutilizado (pausas, min)", indicadores["inutilizado_programado"])
-    c3.metric("Neto (min)", indicadores["neto"])
-    c4.metric("Perdido no programado (min)", indicadores["perdido_no_programado"])
-    c5.metric("% Perdido", indicadores["porcentaje_perdido"])
+    c1.metric("Total disponible (min)", f"{indicadores['total_disponible']:.2f}")
+    c2.metric("Inutilizado (pausas, min)", f"{indicadores['inutilizado_programado']:.2f}")
+    c3.metric("Neto (min)", f"{indicadores['neto']:.2f}")
+    c4.metric("Perdido no programado (min)", f"{indicadores['perdido_no_programado']:.2f}")
+    c5.metric("% Perdido", f"{indicadores['porcentaje_perdido']:.2f}")
 
     # Detalle de tiempos muertos + descargas
     st.divider()
     st.subheader("⏱️ Tiempos muertos detectados (≥ umbral)")
     st.write(
         f"Total: **{len(lista_gaps)} intervalos**, "
-        f"sumando **{indicadores['perdido_no_programado']} min**"
+        f"sumando **{indicadores['perdido_no_programado']:.2f} min**"
     )
 
     if lista_gaps:
-        # Base con minutos exactos (sin redondeo) desde generar_reloj
-        df_gaps = pd.DataFrame(lista_gaps)  # Inicio, Fin, Duracion_min
-
-        # ----- TABLA: Duración como HH:MM:SS (sin '0 days') -----
+        df_gaps = pd.DataFrame(lista_gaps)
         td = pd.to_timedelta(df_gaps["Duracion_min"], unit="m")
         df_show = df_gaps.copy()
         df_show["Duracion"] = td.apply(fmt_hms_from_timedelta)
         df_show = df_show[["Inicio", "Fin", "Duracion"]]
         st.dataframe(df_show, use_container_width=True)
 
-        # ----- CSV: Duración como HH:MM:SS -----
-        csv_df = df_show.copy()  # ya tiene Duracion formateada
+        csv_df = df_show.copy()
         csv_bytes = csv_df.to_csv(index=False).encode("utf-8")
         st.download_button(
             "📥 Descargar detalle (CSV)",
@@ -149,7 +138,6 @@ if st.button("Generar gráfico", type="primary"):
             mime="text/csv",
         )
 
-        # ----- Excel: valor de tiempo + formato [h]:mm:ss -----
         xlsx_df = df_gaps.copy()
         xlsx_df["Duracion"] = pd.to_timedelta(xlsx_df["Duracion_min"], unit="m").dt.total_seconds() / 86400.0
         xlsx_df = xlsx_df[["Inicio", "Fin", "Duracion"]]
@@ -160,11 +148,9 @@ if st.button("Generar gráfico", type="primary"):
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             xlsx_df.to_excel(writer, index=False, sheet_name="TiemposMuertos")
             ws = writer.book["TiemposMuertos"]
-            # Formato de tiempo para duraciones
             dur_col_letter = get_column_letter(3)
             for row in range(2, ws.max_row + 1):
                 ws[f"{dur_col_letter}{row}"].number_format = "[h]:mm:ss"
-
             ws.column_dimensions["A"].width = 10
             ws.column_dimensions["B"].width = 10
             ws.column_dimensions["C"].width = 12
