@@ -24,15 +24,11 @@ SHEET_EXPORT_URL = (
 # =========================================================
 @st.cache_data(show_spinner=False)
 def cargar_excel_desde_sheet(url: str) -> pd.DataFrame:
-    # Encabezados reales en fila 2 → header=1
     df = pd.read_excel(url, sheet_name=0, engine="openpyxl", header=1)
     return df
 
 def normalizar_columnas(df: pd.DataFrame) -> pd.DataFrame:
-    # Limpieza básica de encabezados
     df.columns = [str(c).strip() for c in df.columns]
-
-    # Mapear alias a nombres canónicos
     rename_map = {}
     for c in df.columns:
         cl = (
@@ -46,17 +42,13 @@ def normalizar_columnas(df: pd.DataFrame) -> pd.DataFrame:
             rename_map[c] = "Fecha"
         if cl in ["id equipo", "id_equipo", "id maquina", "id máquina", "equipo", "machineid", "idequipo"]:
             rename_map[c] = "Id Equipo"
-
     df = df.rename(columns=rename_map)
-
     if "Fecha" not in df.columns or "Id Equipo" not in df.columns:
         raise ValueError("No se encuentran las columnas requeridas: 'Fecha' y 'Id Equipo'.")
-
     df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce", dayfirst=True)
     df["Id Equipo"] = df["Id Equipo"].astype(str).str.strip()
     return df
 
-# Descargar y preparar datos
 with st.spinner("Cargando datos de Google Sheets..."):
     raw = cargar_excel_desde_sheet(SHEET_EXPORT_URL)
 
@@ -82,11 +74,9 @@ if not fechas_disponibles:
     st.error("No se encontraron fechas en el archivo.")
     st.stop()
 
-# Modo de selección: una o múltiples fechas
 modo_multiple = col_top2.toggle("Seleccionar múltiples fechas", value=False, help="Activá para elegir más de una fecha")
 
 if not modo_multiple:
-    # Selección simple (como antes)
     fecha_defecto = fechas_disponibles[0]
     fecha_sel = col_top3.selectbox(
         "Fecha",
@@ -95,7 +85,6 @@ if not modo_multiple:
     )
     fechas_seleccionadas = [fecha_sel]
 else:
-    # Multiselección (p. ej. semana completa)
     preselect = fechas_disponibles[-5:] if len(fechas_disponibles) >= 5 else fechas_disponibles
     fechas_seleccionadas = col_top3.multiselect(
         "Fechas (podés elegir varias)",
@@ -113,9 +102,6 @@ umbral_min = st.number_input(
     help="Solo se consideran tiempos muertos con duración mayor o igual a este umbral."
 )
 
-# =========================================================
-# Utilidad de formateo HH:MM:SS
-# =========================================================
 def fmt_hms_from_timedelta(td: pd.Timedelta) -> str:
     total = int(td.total_seconds())
     h = total // 3600
@@ -123,9 +109,6 @@ def fmt_hms_from_timedelta(td: pd.Timedelta) -> str:
     s = total % 60
     return f"{h:02d}:{m:02d}:{s:02d}"
 
-# =========================================================
-# Render de un día (gráfico + indicadores + descargas)
-# =========================================================
 def render_dia(fecha_dia):
     st.subheader(f"📅 Día {fecha_dia}")
     with st.spinner("Procesando..."):
@@ -133,10 +116,8 @@ def render_dia(fecha_dia):
             df, maquina_sel, fecha_dia, umbral_minutos=umbral_min
         )
 
-    # Gráfico
     st.pyplot(fig, use_container_width=True)
 
-    # Indicadores (2 decimales)
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Total disponible (min)", f"{indicadores['total_disponible']:.2f}")
     c2.metric("Inutilizado (pausas, min)", f"{indicadores['inutilizado_programado']:.2f}")
@@ -153,16 +134,13 @@ def render_dia(fecha_dia):
         st.info("No se detectaron tiempos muertos para este día.")
         return None
 
-    df_gaps = pd.DataFrame(lista_gaps)  # Inicio, Fin, Duracion_min (float exacto)
-
-    # Tabla con HH:MM:SS
+    df_gaps = pd.DataFrame(lista_gaps)
     td = pd.to_timedelta(df_gaps["Duracion_min"], unit="m")
     df_show = df_gaps.copy()
     df_show["Duracion"] = td.apply(fmt_hms_from_timedelta)
     df_show = df_show[["Inicio", "Fin", "Duracion"]]
     st.dataframe(df_show, use_container_width=True)
 
-    # Descarga CSV (HH:MM:SS)
     csv_df = df_show.copy()
     csv_bytes = csv_df.to_csv(index=False).encode("utf-8")
     st.download_button(
@@ -173,7 +151,6 @@ def render_dia(fecha_dia):
         use_container_width=True,
     )
 
-    # Descarga Excel (valor + formato [h]:mm:ss)
     xlsx_df = df_gaps.copy()
     xlsx_df["Duracion"] = pd.to_timedelta(xlsx_df["Duracion_min"], unit="m").dt.total_seconds() / 86400.0
     xlsx_df = xlsx_df[["Inicio", "Fin", "Duracion"]]
@@ -199,7 +176,6 @@ def render_dia(fecha_dia):
         use_container_width=True,
     )
 
-    # Devuelvo resumen para agregados (por si se seleccionan varios días)
     return {
         "Fecha": fecha_dia,
         "Total_disponible_min": indicadores["total_disponible"],
@@ -209,9 +185,6 @@ def render_dia(fecha_dia):
         "%_Perdido": indicadores["porcentaje_perdido"],
     }
 
-# =========================================================
-# Acción
-# =========================================================
 if st.button("Generar gráfico(s)", type="primary", use_container_width=True):
     res_resumen = []
     for f in fechas_seleccionadas:
@@ -221,37 +194,33 @@ if st.button("Generar gráfico(s)", type="primary", use_container_width=True):
             if resumen:
                 res_resumen.append(resumen)
 
-    # Si hubo varios días, muestro resumen agregado
     if len(res_resumen) > 1:
         st.subheader("📈 Resumen de días seleccionados")
         df_res = pd.DataFrame(res_resumen)
-
-        # 2 decimales en display
         df_res_display = df_res.copy()
         for col in ["Total_disponible_min", "Inutilizado_prog_min", "Neto_min", "Perdido_no_prog_min", "%_Perdido"]:
             df_res_display[col] = df_res_display[col].map(lambda x: f"{x:.2f}")
         st.dataframe(df_res_display, use_container_width=True)
 
-        # ========= NUEVO: Gráfico de línea histórico (% Perdido) =========
+        # ========= Gráfico de línea histórico (% Perdido) =========
         st.markdown("#### 📉 Histórico de % Perdido")
         df_plot = df_res.copy()
-        # Asegurar orden cronológico
         df_plot["Fecha_dt"] = pd.to_datetime(df_plot["Fecha"])
+        df_plot = df_plot.groupby("Fecha_dt", as_index=False)["%_Perdido"].mean()
         df_plot = df_plot.sort_values("Fecha_dt")
 
         fig, ax = plt.subplots(figsize=(8, 3))
         ax.plot(df_plot["Fecha_dt"], df_plot["%_Perdido"], marker="o", linewidth=2)
         ax.set_xlabel("Fecha")
         ax.set_ylabel("% Perdido")
-        ax.grid(True, alpha=0.3)
+        ax.set_ylim(bottom=0)
+        ax.xaxis.set_major_locator(mdates.DayLocator())
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
-        for label in ax.get_xticklabels():
-            label.set_rotation(45)
-            label.set_horizontalalignment("right")
+        ax.grid(True, alpha=0.3)
+        fig.autofmt_xdate(rotation=45, ha="right")
         st.pyplot(fig, use_container_width=True)
-        # ========= FIN NUEVO =========
+        # ========= FIN gráfico histórico =========
 
-        # Descargas del resumen
         csv_bytes = df_res.to_csv(index=False).encode("utf-8")
         st.download_button(
             "📥 Descargar resumen (CSV)",
