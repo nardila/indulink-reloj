@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 from datetime import date
 from reloj_circular import generar_reloj
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 
 # =========================================================
 # Configuración general
@@ -94,7 +96,6 @@ if not modo_multiple:
     fechas_seleccionadas = [fecha_sel]
 else:
     # Multiselección (p. ej. semana completa)
-    # Para comodidad, preseleccionamos la última semana disponible si hay ≥ 5 fechas
     preselect = fechas_disponibles[-5:] if len(fechas_disponibles) >= 5 else fechas_disponibles
     fechas_seleccionadas = col_top3.multiselect(
         "Fechas (podés elegir varias)",
@@ -224,11 +225,31 @@ if st.button("Generar gráfico(s)", type="primary", use_container_width=True):
     if len(res_resumen) > 1:
         st.subheader("📈 Resumen de días seleccionados")
         df_res = pd.DataFrame(res_resumen)
+
         # 2 decimales en display
         df_res_display = df_res.copy()
         for col in ["Total_disponible_min", "Inutilizado_prog_min", "Neto_min", "Perdido_no_prog_min", "%_Perdido"]:
             df_res_display[col] = df_res_display[col].map(lambda x: f"{x:.2f}")
         st.dataframe(df_res_display, use_container_width=True)
+
+        # ========= NUEVO: Gráfico de línea histórico (% Perdido) =========
+        st.markdown("#### 📉 Histórico de % Perdido")
+        df_plot = df_res.copy()
+        # Asegurar orden cronológico
+        df_plot["Fecha_dt"] = pd.to_datetime(df_plot["Fecha"])
+        df_plot = df_plot.sort_values("Fecha_dt")
+
+        fig, ax = plt.subplots(figsize=(8, 3))
+        ax.plot(df_plot["Fecha_dt"], df_plot["%_Perdido"], marker="o", linewidth=2)
+        ax.set_xlabel("Fecha")
+        ax.set_ylabel("% Perdido")
+        ax.grid(True, alpha=0.3)
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
+        for label in ax.get_xticklabels():
+            label.set_rotation(45)
+            label.set_horizontalalignment("right")
+        st.pyplot(fig, use_container_width=True)
+        # ========= FIN NUEVO =========
 
         # Descargas del resumen
         csv_bytes = df_res.to_csv(index=False).encode("utf-8")
