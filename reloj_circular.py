@@ -105,6 +105,9 @@ def generar_reloj(df, maquina_id, fecha, umbral_minutos=3):
     # Quitamos duplicados exactos de timestamp para evitar micro-gaps falsos
     df_dia = df_dia.drop_duplicates(subset=["Fecha"])
 
+    # ⬇️ ÚNICO CAMBIO: acotar estrictamente al rango del turno
+    df_dia = df_dia[(df_dia["Fecha"] >= inicio_dt) & (df_dia["Fecha"] <= fin_dt)]
+
     # ---------------- Candidatos de gap (> umbral) ----------------
     # Incluimos arranque y cierre teóricos
     eventos = [inicio_dt] + list(df_dia["Fecha"]) + [fin_dt]
