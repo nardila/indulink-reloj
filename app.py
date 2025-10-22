@@ -16,7 +16,7 @@ st.title("📊 Reloj Circular de Tiempos Muertos")
 # =========================================================
 SHEET_EXPORT_URL = (
     "https://docs.google.com/spreadsheets/d/"
-    "1GSoaEg-ZUn5jB_VvLXcCkZjUnLR24ynIBPH3BcpCXXM/export?format=xlsx"
+    "1AR7wF_dvv1vrpzjzTY1PWdbN87121IcWmzdIHs_Ne0s/export?format=xlsx"
 )
 
 # =========================================================
