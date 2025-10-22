@@ -45,7 +45,6 @@ def normalizar_columnas(df: pd.DataFrame) -> pd.DataFrame:
     if "Fecha" not in df.columns or "Id Equipo" not in df.columns:
         raise ValueError("No se encuentran las columnas requeridas: 'Fecha' y 'Id Equipo'.")
 
-    # Parseo básico (tu archivo ya viene homogéneo)
     df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce", infer_datetime_format=True)
     df["Id Equipo"] = df["Id Equipo"].astype(str).str.strip()
     return df
@@ -64,7 +63,7 @@ maquina_sel = col_top1.selectbox("Máquina", maquinas, index=0)
 fechas_disponibles = sorted(pd.Series(df["Fecha"].dt.date.dropna().unique()).tolist())
 modo_multiple = col_top2.toggle("Seleccionar múltiples fechas", value=False)
 
-# ⬇️ Nuevo toggle para controlar si se muestran los gráficos individuales
+# Toggle para mostrar o no los gráficos individuales
 mostrar_detalle = True
 if modo_multiple:
     mostrar_detalle = col_top3.toggle(
@@ -95,7 +94,6 @@ def fmt_hms(td: pd.Timedelta):
     h, m, s = total // 3600, (total % 3600) // 60, total % 60
     return f"{h:02d}:{m:02d}:{s:02d}"
 
-# ========= Dibuja el día (gráfico polar + KPIs + tabla) =========
 def render_dia(fecha_dia):
     fig, indicadores, lista_gaps = generar_reloj(
         df, maquina_sel, fecha_dia, umbral_minutos=umbral_min
@@ -114,13 +112,11 @@ def render_dia(fecha_dia):
         df_gaps["Duracion"] = pd.to_timedelta(df_gaps["Duracion_min"], unit="m").apply(fmt_hms)
         st.dataframe(df_gaps[["Inicio", "Fin", "Duracion"]], use_container_width=True)
 
-    # Devuelvo un pequeño resumen para la tabla consolidada
     return {
         "Fecha": fecha_dia,
         "%_Perdido": indicadores["porcentaje_perdido"]
     }
 
-# ========= Calcula solo el resumen (SIN DIBUJAR) =========
 def resumen_solo(fecha_dia):
     _, indicadores, _ = generar_reloj(
         df, maquina_sel, fecha_dia, umbral_minutos=umbral_min
@@ -130,30 +126,26 @@ def resumen_solo(fecha_dia):
         "%_Perdido": indicadores["porcentaje_perdido"]
     }
 
-# ========= Acción principal =========
 if st.button("Generar gráfico(s)", type="primary", use_container_width=True):
     resumen = []
 
     for f in fechas_seleccionadas:
         if not modo_multiple or mostrar_detalle:
-            # Modo individual o múltiple con detalle → dibujo todo
             st.subheader(f"📅 Día {f}")
             res = render_dia(f)
             resumen.append(res)
             st.divider()
         else:
-            # Múltiple SIN detalle → solo calculo, NO dibujo
             res = resumen_solo(f)
             resumen.append(res)
 
-    # Resumen consolidado si hay más de un día
     if len(resumen) > 1:
         st.subheader("📈 Resumen de días seleccionados")
         df_res = pd.DataFrame(resumen)
         df_res = df_res.sort_values("Fecha")
         st.dataframe(df_res, use_container_width=True)
 
-        # 📉 Gráfico histórico (% Perdido) con eje X categórico (espaciado uniforme)
+        # 📉 Gráfico histórico (% Perdido)
         st.markdown("#### 📉 Histórico de % Perdido")
         labels = df_res["Fecha"].astype(str).tolist()
         x = range(len(labels))
@@ -166,4 +158,13 @@ if st.button("Generar gráfico(s)", type="primary", use_container_width=True):
         ax.set_xticks(list(x))
         ax.set_xticklabels(labels, rotation=45, ha="right")
         ax.grid(True, alpha=0.3)
+
+        # 🔹 NUEVO: mostrar el valor exacto arriba de cada punto
+        for i, y in enumerate(df_res["%_Perdido"]):
+            ax.text(
+                i, y + (df_res["%_Perdido"].max() * 0.03),
+                f"{y:.2f}%",
+                ha="center", va="bottom", fontsize=8, fontweight="bold"
+            )
+
         st.pyplot(fig, use_container_width=True)
