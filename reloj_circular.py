@@ -70,7 +70,7 @@ def generar_reloj(df, maquina_id, fecha, umbral_minutos=3):
       - Turno: Lun–Jue 06:00–16:00, Vie 06:00–15:00
       - Pausas programadas: 08:00–08:20, 12:00–12:40 y últimos 20 min del turno (limpieza)
       - Crea eventos teóricos a las 06:00 y al cierre (15:00/16:00)
-      - Gaps > umbral
+      - Gaps >= umbral (cuenta 3.0 min exactos)
       - Las pausas NO planificadas NO se marcan dentro de pausas programadas (se recortan)
     """
     # ---------------- Turno por día ----------------
@@ -105,16 +105,17 @@ def generar_reloj(df, maquina_id, fecha, umbral_minutos=3):
     # Quitamos duplicados exactos de timestamp para evitar micro-gaps falsos
     df_dia = df_dia.drop_duplicates(subset=["Fecha"])
 
-    # ⬇️ ÚNICO CAMBIO: acotar estrictamente al rango del turno
+    # ⬇️ Filtro para acotar estrictamente al rango del turno (evita gaps post 16:00/15:00)
     df_dia = df_dia[(df_dia["Fecha"] >= inicio_dt) & (df_dia["Fecha"] <= fin_dt)]
 
-    # ---------------- Candidatos de gap (> umbral) ----------------
+    # ---------------- Candidatos de gap (>= umbral) ----------------
     # Incluimos arranque y cierre teóricos
     eventos = [inicio_dt] + list(df_dia["Fecha"]) + [fin_dt]
     candidatos = []
     for i in range(len(eventos) - 1):
         a, b = eventos[i], eventos[i + 1]
-        if (b - a).total_seconds() / 60.0 > umbral_minutos:
+        # ÚNICO CAMBIO: ahora contamos gaps de duración exactamente igual al umbral
+        if (b - a).total_seconds() / 60.0 >= umbral_minutos:
             candidatos.append((a, b))
 
     # ---------------- Restar pausas programadas de los candidatos ----------------
