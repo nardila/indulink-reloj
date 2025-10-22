@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import date
 from reloj_circular import generar_reloj
 import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
+import matplotlib.dates as mdates  # sigue importado aunque no lo usemos en el gráfico categórico
 
 # =========================================================
 # Configuración general
@@ -16,7 +16,7 @@ st.title("📊 Reloj Circular de Tiempos Muertos")
 # =========================================================
 SHEET_EXPORT_URL = (
     "https://docs.google.com/spreadsheets/d/"
-    "1GSoaEg-ZUn5jB_VvLXcCkZjUnLR24ynIBPH3BcpCXXM/export?format=xlsx"
+    "1clzNg0YblSQVvpWlWqeAwHKYiTyKcv-meWaI1RILAFo/export?format=xlsx"
 )
 
 # =========================================================
@@ -154,12 +154,12 @@ def render_dia(fecha_dia):
     c1.metric("Total disponible (min)", f"{indicadores['total_disponible']:.2f}")
     c2.metric("Inutilizado (pausas, min)", f"{indicadores['inutilizado_programado']:.2f}")
     c3.metric("Neto (min)", f"{indicadores['neto']:.2f}")
-    c4.metric("Perdido no programado (min)", f"{indicadores['perdido_no_programado']:.2f}")
+    c4.metric("Perdido no programado (min)", f"{indicadores['porcentaje_perdido']:.2f}")
     c5.metric("% Perdido", f"{indicadores['porcentaje_perdido']:.2f}")
 
     st.markdown(
         f"**Tiempos muertos detectados (≥ {umbral_min} min):** "
-        f"**{len(lista_gaps)} intervalos**, total **{indicadores['perdido_no_programado']:.2f} min**."
+        f"**{len(lista_gaps)} intervalos**, total **{indicadores['porcentaje_perdido']:.2f} min**."
     )
 
     if not lista_gaps:
@@ -212,7 +212,7 @@ def render_dia(fecha_dia):
         "Total_disponible_min": indicadores["total_disponible"],
         "Inutilizado_prog_min": indicadores["inutilizado_programado"],
         "Neto_min": indicadores["neto"],
-        "Perdido_no_prog_min": indicadores["perdido_no_programado"],
+        "Perdido_no_prog_min": indicadores["porcentaje_perdido"],
         "%_Perdido": indicadores["porcentaje_perdido"],
     }
 
@@ -240,8 +240,12 @@ if st.button("Generar gráfico(s)", type="primary", use_container_width=True):
         df_plot = df_plot.groupby("Fecha_dt", as_index=False)["%_Perdido"].mean()
         df_plot = df_plot.sort_values("Fecha_dt")
 
+        # ---- Escala categórica (espaciado uniforme, sin huecos) ----
+        labels = df_plot["Fecha_dt"].dt.strftime("%Y-%m-%d").tolist()
+        x = list(range(len(labels)))
+
         fig, ax = plt.subplots(figsize=(8, 3))
-        ax.plot(df_plot["Fecha_dt"], df_plot["%_Perdido"], marker="o", linewidth=2)
+        ax.plot(x, df_plot["%_Perdido"], marker="o", linewidth=2)
         ax.set_xlabel("Fecha")
         ax.set_ylabel("% Perdido")
 
@@ -249,9 +253,9 @@ if st.button("Generar gráfico(s)", type="primary", use_container_width=True):
         max_y = df_plot["%_Perdido"].max() if not df_plot.empty else 0
         ax.set_ylim(bottom=0, top=max_y * 2)
 
-        # ✅ Mostrar SOLO las fechas con datos (sin rellenar días faltantes)
-        ax.set_xticks(df_plot["Fecha_dt"])
-        ax.set_xticklabels(df_plot["Fecha_dt"].dt.strftime("%Y-%m-%d"), rotation=45, ha="right")
+        # Etiquetas categóricas
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=45, ha="right")
 
         ax.grid(True, alpha=0.3)
         st.pyplot(fig, use_container_width=True)
