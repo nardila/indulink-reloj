@@ -29,7 +29,6 @@ def _interval_subtract(base_interval, cut_interval):
         parts.append((max(d, a), b))
     return parts
 
-
 def _dt_to_angle(dt, start_dt, end_dt):
     total_min = (end_dt - start_dt).total_seconds() / 60.0
     if total_min <= 0:
@@ -46,13 +45,13 @@ def generar_reloj(df, maquina_id, fecha, umbral_minutos=3):
     Devuelve:
       - fig: gráfico polar
       - indicadores: métricas del día
-      - lista_gaps: detalle de intervalos de tiempo muerto (> umbral) con inicio, fin y duración (min)
+      - lista_gaps: detalle de intervalos de tiempo muerto (>= umbral) con inicio, fin y duración (min)
 
     Reglas:
       - Turno: Lun–Jue 06:00–16:00, Vie 06:00–15:00
       - Pausas programadas: 08:00–08:20, 12:00–12:40 y últimos 20 min del turno (limpieza)
       - Crea eventos teóricos a las 06:00 y al cierre (15:00/16:00)
-      - Gaps > umbral
+      - Gaps >= umbral
       - Las pausas NO planificadas NO se marcan dentro de pausas programadas (se recortan)
       - Se ignoran las filas donde 'Parcial' sea 0 (no hay evento real)
     """
@@ -76,22 +75,18 @@ def generar_reloj(df, maquina_id, fecha, umbral_minutos=3):
     # ---------------- Filtrado y normalización ----------------
     df_dia = df[(df["Id Equipo"] == maquina_id) & (df["Fecha"].dt.date == fecha)].copy()
 
-    # ✅ ROBUSTO: encontrar la columna "Parcial" sin depender del nombre exacto
-    parcial_col = None
-    for c in df_dia.columns:
-        cl = str(c).strip().lower()
-        # buscamos 'parcial' en el nombre de la columna
-        if "parcial" in cl:
-            parcial_col = c
-            break
-
-    if parcial_col is not None:
-        # convertir a numérico, NaN -> 0 y filtrar estrictamente > 0
-        parc = pd.to_numeric(df_dia[parcial_col], errors="coerce").fillna(0)
-        df_dia = df_dia[parc > 0]
+    # ✅ Filtro robusto de "Parcial" > 0 (independiente del nombre/tipo)
+    if not df_dia.empty:
+        parcial_col = None
+        for c in df_dia.columns:
+            if "parcial" in str(c).strip().lower():
+                parcial_col = c
+                break
+        if parcial_col is not None:
+            parc = pd.to_numeric(df_dia[parcial_col], errors="coerce").fillna(0)
+            df_dia = df_dia[parc > 0]
 
     if df_dia.empty:
-        # Estado controlado sin datos
         fig, ax = plt.subplots(figsize=(8, 5))
         ax.axis("off")
         ax.text(0.5, 0.5, "Sin eventos para la combinación seleccionada", ha="center", va="center")
@@ -100,17 +95,18 @@ def generar_reloj(df, maquina_id, fecha, umbral_minutos=3):
         return fig, indicadores, []
 
     df_dia = df_dia.sort_values("Fecha").reset_index(drop=True)
-    # importante: conservar segundos (nada de redondear a minuto)
+    # conservar segundos
     df_dia["Fecha"] = pd.to_datetime(df_dia["Fecha"], errors="coerce").dt.floor("s")
     # quitar duplicados exactos de timestamp
     df_dia = df_dia.drop_duplicates(subset=["Fecha"])
 
-    # ---------------- Candidatos de gap (> umbral) ----------------
+    # ---------------- Candidatos de gap (>= umbral) ----------------
     eventos = [inicio_dt] + list(df_dia["Fecha"]) + [fin_dt]
     candidatos = []
     for i in range(len(eventos) - 1):
         a, b = eventos[i], eventos[i + 1]
-        if (b - a).total_seconds() / 60.0 > umbral_minutos:
+        # ⬅️ ÚNICO CAMBIO: incluir iguales al umbral
+        if (b - a).total_seconds() / 60.0 >= umbral_minutos:
             candidatos.append((a, b))
 
     # ---------------- Restar pausas programadas ----------------
@@ -155,24 +151,28 @@ def generar_reloj(df, maquina_id, fecha, umbral_minutos=3):
     ax.set_yticklabels([])
     ax.set_xticklabels([])
 
-    # Pausas programadas
+    # Pausas programadas (azul)
     for nombre, ps, pe in pausas:
         ang0 = _dt_to_angle(ps, inicio_dt, fin_dt)
         ang1 = _dt_to_angle(pe, inicio_dt, fin_dt)
         if ang1 > ang0:
-            ax.barh(1.0, width=ang1 - ang0, left=ang0, height=0.10,
-                    color="royalblue", alpha=0.8, edgecolor="black", linewidth=0.5)
+            ax.barh(
+                1.0, width=ang1 - ang0, left=ang0, height=0.10,
+                color="royalblue", alpha=0.8, edgecolor="black", linewidth=0.5
+            )
             ax.text(ang0 + (ang1 - ang0) / 2, 1.12, nombre, ha="center", va="center", fontsize=9)
 
-    # No planificadas
+    # No planificadas (rojo)
     for a, b in unplanned:
         ang0 = _dt_to_angle(a, inicio_dt, fin_dt)
         ang1 = _dt_to_angle(b, inicio_dt, fin_dt)
         if ang1 > ang0:
-            ax.barh(1.0, width=ang1 - ang0, left=ang0, height=0.10,
-                    color="red", alpha=0.85, edgecolor="black", linewidth=0.8)
+            ax.barh(
+                1.0, width=ang1 - ang0, left=ang0, height=0.10,
+                color="red", alpha=0.85, edgecolor="black", linewidth=0.8
+            )
 
-    # Radiales y etiquetas horarias
+    # Radiales de hora + etiquetas (06:00 hasta cierre)
     h = inicio_dt.replace(minute=0, second=0)
     if h < inicio_dt:
         h += timedelta(hours=1)
