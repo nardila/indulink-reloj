@@ -151,15 +151,14 @@ def render_dia(fecha_dia):
         use_container_width=True,
     )
 
-    xlsx_df = df_gaps.copy()
-    xlsx_df["Duracion"] = pd.to_timedelta(xlsx_df["Duracion_min"], unit="m").dt.total_seconds() / 86400.0
-    xlsx_df = xlsx_df[["Inicio", "Fin", "Duracion"]]
-
     from io import BytesIO
     from openpyxl.utils import get_column_letter
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        xlsx_df.to_excel(writer, index=False, sheet_name="TiemposMuertos")
+        df_xlsx = df_gaps.copy()
+        df_xlsx["Duracion"] = pd.to_timedelta(df_xlsx["Duracion_min"], unit="m").dt.total_seconds() / 86400.0
+        df_xlsx = df_xlsx[["Inicio", "Fin", "Duracion"]]
+        df_xlsx.to_excel(writer, index=False, sheet_name="TiemposMuertos")
         ws = writer.book["TiemposMuertos"]
         dur_col_letter = get_column_letter(3)
         for row in range(2, ws.max_row + 1):
@@ -213,7 +212,11 @@ if st.button("Generar gráfico(s)", type="primary", use_container_width=True):
         ax.plot(df_plot["Fecha_dt"], df_plot["%_Perdido"], marker="o", linewidth=2)
         ax.set_xlabel("Fecha")
         ax.set_ylabel("% Perdido")
-        ax.set_ylim(bottom=0)
+
+        # Escala dinámica del eje Y (doble del valor máximo)
+        max_y = df_plot["%_Perdido"].max() if not df_plot.empty else 0
+        ax.set_ylim(bottom=0, top=max_y * 2)
+
         ax.xaxis.set_major_locator(mdates.DayLocator())
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
         ax.grid(True, alpha=0.3)
