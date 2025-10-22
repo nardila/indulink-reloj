@@ -10,8 +10,7 @@ st.set_page_config(page_title="Reloj de Tiempos Muertos", layout="wide")
 st.title("📊 Reloj Circular de Tiempos Muertos")
 
 # =========================================================
-# CONFIGURACIÓN GOOGLE SHEETS
-# (usamos tu Sheet público exportado como XLSX)
+# CONFIGURACIÓN GOOGLE SHEETS (XLSX export)
 # =========================================================
 SHEET_EXPORT_URL = (
     "https://docs.google.com/spreadsheets/d/"
@@ -23,10 +22,9 @@ SHEET_EXPORT_URL = (
 # =========================================================
 @st.cache_data(show_spinner=False)
 def cargar_excel_desde_sheet(url: str) -> pd.DataFrame:
-    # En tu Sheet los encabezados reales están en la fila 2 → header=1
+    # En el Sheet los encabezados reales están en la fila 2 → header=1
     df = pd.read_excel(url, sheet_name=0, engine="openpyxl", header=1)
     return df
-
 
 def normalizar_columnas(df: pd.DataFrame) -> pd.DataFrame:
     # Limpieza básica de encabezados
@@ -39,11 +37,8 @@ def normalizar_columnas(df: pd.DataFrame) -> pd.DataFrame:
             str(c)
             .strip()
             .lower()
-            .replace("í", "i")
-            .replace("á", "a")
-            .replace("é", "e")
-            .replace("ó", "o")
-            .replace("ú", "u")
+            .replace("í", "i").replace("á", "a").replace("é", "e")
+            .replace("ó", "o").replace("ú", "u")
         )
         if cl in ["fecha", "fecha y hora", "fecha/hora", "timestamp", "date", "datetime"]:
             rename_map[c] = "Fecha"
@@ -58,7 +53,6 @@ def normalizar_columnas(df: pd.DataFrame) -> pd.DataFrame:
     df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce", dayfirst=True)
     df["Id Equipo"] = df["Id Equipo"].astype(str).str.strip()
     return df
-
 
 # Descargar y preparar datos
 with st.spinner("Cargando datos de Google Sheets..."):
@@ -91,10 +85,7 @@ fecha_sel = col2.selectbox(
 
 umbral_min = col3.number_input(
     "Umbral de pausa no planificada (min)",
-    min_value=1,
-    max_value=30,
-    value=3,
-    step=1,
+    min_value=1, max_value=30, value=3, step=1,
 )
 
 # =========================================================
@@ -128,11 +119,27 @@ if st.button("Generar gráfico", type="primary"):
     )
 
     if lista_gaps:
-        df_gaps = pd.DataFrame(lista_gaps)
-        st.dataframe(df_gaps, use_container_width=True)
+        # ---------------------------
+        # Armar DataFrame base
+        # ---------------------------
+        df_gaps = pd.DataFrame(lista_gaps)  # columnas: Inicio, Fin, Duracion_min (minutos exactos, sin redondeo)
 
-        # Descarga CSV
-        csv_bytes = df_gaps.to_csv(index=False).encode("utf-8")
+        # ---------------------------
+        # Duración en formato 00:00:00 para la TABLA
+        # ---------------------------
+        # Convertimos minutos (float) -> timedelta -> string HH:MM:SS
+        td = pd.to_timedelta(df_gaps["Duracion_min"], unit="m")
+        df_show = df_gaps.copy()
+        df_show["Duracion"] = td.apply(lambda x: str(x).split(".")[0])  # HH:MM:SS (sin milisegundos)
+        # Mostramos columnas limpias (sin Duracion_min para evitar confundir)
+        df_show = df_show[["Inicio", "Fin", "Duracion"]]
+        st.dataframe(df_show, use_container_width=True)
+
+        # ---------------------------
+        # Descarga CSV (con HH:MM:SS)
+        # ---------------------------
+        csv_df = df_show.copy()  # ya tiene Duracion como HH:MM:SS
+        csv_bytes = csv_df.to_csv(index=False).encode("utf-8")
         st.download_button(
             "📥 Descargar detalle (CSV)",
             data=csv_bytes,
@@ -140,11 +147,30 @@ if st.button("Generar gráfico", type="primary"):
             mime="text/csv",
         )
 
-        # Descarga Excel
+        # ---------------------------
+        # Descarga Excel (Duracion con formato [h]:mm:ss real)
+        # ---------------------------
+        # Para Excel, usamos valor numérico en días y aplicamos formato de hora
+        xlsx_df = df_gaps.copy()
+        xlsx_df["Duracion"] = pd.to_timedelta(xlsx_df["Duracion_min"], unit="m").dt.total_seconds() / 86400.0
+        xlsx_df = xlsx_df[["Inicio", "Fin", "Duracion"]]  # Duracion en días (Excel time)
+
         from io import BytesIO
+        from openpyxl.utils import get_column_letter
         output = BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            df_gaps.to_excel(writer, index=False, sheet_name="TiemposMuertos")
+            xlsx_df.to_excel(writer, index=False, sheet_name="TiemposMuertos")
+            ws = writer.book["TiemposMuertos"]
+            # Aplicar formato [h]:mm:ss a la columna Duracion (columna 3)
+            dur_col_letter = get_column_letter(3)
+            for row in range(2, ws.max_row + 1):
+                ws[f"{dur_col_letter}{row}"].number_format = "[h]:mm:ss"
+
+            # Ajuste de ancho básico
+            ws.column_dimensions["A"].width = 10  # Inicio
+            ws.column_dimensions["B"].width = 10  # Fin
+            ws.column_dimensions["C"].width = 12  # Duracion
+
         st.download_button(
             "📥 Descargar detalle (Excel)",
             data=output.getvalue(),
