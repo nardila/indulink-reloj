@@ -159,12 +159,12 @@ if st.button("Generar gráfico(s)", type="primary", use_container_width=True):
         ax.set_xticklabels(labels, rotation=45, ha="right")
         ax.grid(True, alpha=0.3)
 
-        # 🔹 NUEVO: mostrar el valor exacto arriba de cada punto
+        # 🔹 Etiquetas de valor elevadas (mayor margen vertical)
         for i, y in enumerate(df_res["%_Perdido"]):
             ax.text(
-                i, y + (df_res["%_Perdido"].max() * 0.03),
+                i, y + (df_res["%_Perdido"].max() * 0.07),  # ⬆️ margen aumentado de 3% a 7%
                 f"{y:.2f}%",
-                ha="center", va="bottom", fontsize=8, fontweight="bold"
+                ha="center", va="bottom", fontsize=9, fontweight="bold"
             )
 
         st.pyplot(fig, use_container_width=True)
