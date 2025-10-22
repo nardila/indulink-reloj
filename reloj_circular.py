@@ -126,7 +126,7 @@ def generar_reloj(df, maquina_id, fecha, umbral_minutos=3):
     ]
 
     # ---------------- Gráfico polar ----------------
-    fig = plt.figure(figsize=(8, 6), facecolor="white")  # 🔹 Tamaño ajustado
+    fig = plt.figure(figsize=(4, 3), facecolor="white")  # 🔹 Tamaño ajustado
     ax = plt.subplot(111, polar=True)
     ax.set_theta_direction(-1)
     ax.set_theta_offset(np.pi / 2)
