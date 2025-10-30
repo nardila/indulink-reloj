@@ -78,29 +78,48 @@ extras = [f"Código: {mid}" for mid in ids_en_datos if mid not in MACHINE_NAME_T
 opciones_maquina = nombres_disponibles + extras
 
 col_top1, col_top2, col_top3 = st.columns([1, 1, 1])
-maquina_vis = col_top1.selectbox("Máquina", opciones_maquina, index=0)
 
-# Resolvemos el ID según lo elegido
-if maquina_vis.startswith("Código: "):
-    maquina_id = maquina_vis.replace("Código: ", "").strip()
-    maquina_nombre = ID_TO_MACHINE_NAME.get(maquina_id, maquina_id)
+# 🔀 NUEVO: toggle para múltiples máquinas
+modo_multiple_maquinas = col_top1.toggle("Seleccionar múltiples máquinas", value=False)
+
+if not modo_multiple_maquinas:
+    # Selección única (comportamiento anterior)
+    maquina_vis = col_top1.selectbox("Máquina", opciones_maquina, index=0)
+    if maquina_vis.startswith("Código: "):
+        maquina_id_unica = maquina_vis.replace("Código: ", "").strip()
+        maquina_nombre_unica = ID_TO_MACHINE_NAME.get(maquina_id_unica, maquina_id_unica)
+    else:
+        maquina_id_unica = MACHINE_NAME_TO_ID.get(maquina_vis, maquina_vis)
+        maquina_nombre_unica = maquina_vis
+    maquinas_seleccionadas = [(maquina_nombre_unica, maquina_id_unica)]
 else:
-    maquina_id = MACHINE_NAME_TO_ID.get(maquina_vis, maquina_vis)
-    maquina_nombre = maquina_vis
+    # Selección múltiple
+    maquinas_pick = col_top1.multiselect("Máquinas", opciones_maquina, default=nombres_disponibles[:1] if nombres_disponibles else [])
+    if not maquinas_pick:
+        st.stop()
+    maquinas_seleccionadas = []
+    for mv in maquinas_pick:
+        if mv.startswith("Código: "):
+            mid = mv.replace("Código: ", "").strip()
+            mname = ID_TO_MACHINE_NAME.get(mid, mid)
+        else:
+            mid = MACHINE_NAME_TO_ID.get(mv, mv)
+            mname = mv
+        maquinas_seleccionadas.append((mname, mid))
 
 fechas_disponibles = sorted(pd.Series(df["Fecha"].dt.date.dropna().unique()).tolist())
-modo_multiple = col_top2.toggle("Seleccionar múltiples fechas", value=False)
+modo_multiple_fechas = col_top2.toggle("Seleccionar múltiples fechas", value=False)
 
-# Toggle para mostrar o no los gráficos individuales (solo aplica en múltiple)
+# Toggle para mostrar o no los gráficos individuales (solo aplica en múltiple de fechas)
 mostrar_detalle = True
-if modo_multiple:
+if modo_multiple_fechas:
     mostrar_detalle = col_top3.toggle(
         "Mostrar gráficos individuales",
         value=True,
         help="Si lo desactivás, solo verás el Resumen y el gráfico histórico."
     )
 
-if not modo_multiple:
+if not modo_multiple_fechas:
     fecha_sel = col_top3.selectbox("Fecha", fechas_disponibles)
     fechas_seleccionadas = [fecha_sel]
 else:
@@ -150,10 +169,10 @@ def contador_total_utilizado(df_base: pd.DataFrame, maquina_id: str, fecha_dia) 
     parc = pd.to_numeric(d[parcial_col], errors="coerce").fillna(0)
     return float(parc[parc > 0].sum())
 
-def render_dia(fecha_dia):
-    # generar_reloj sigue recibiendo el ID de equipo
+def render_dia(df_base: pd.DataFrame, maquina_id: str, maquina_nombre: str, fecha_dia: date, umbral_min: int):
+    # generar_reloj recibe el ID de equipo
     fig, indicadores, lista_gaps = generar_reloj(
-        df, maquina_id, fecha_dia, umbral_minutos=umbral_min
+        df_base, maquina_id, fecha_dia, umbral_minutos=umbral_min
     )
     st.pyplot(fig, use_container_width=True)
 
@@ -204,7 +223,7 @@ def render_dia(fecha_dia):
     # === FIN EXPORTAR A EXCEL ===
 
     # 🔢 Contador total utilizado (Parcial > 0)
-    total_contador = contador_total_utilizado(df, maquina_id, fecha_dia)
+    total_contador = contador_total_utilizado(df_base, maquina_id, fecha_dia)
 
     # Devolvemos todos los campos para el resumen consolidado
     return {
@@ -216,11 +235,11 @@ def render_dia(fecha_dia):
         "Contador total (parcial>0)": total_contador,
     }
 
-def resumen_solo(fecha_dia):
+def resumen_solo(df_base: pd.DataFrame, maquina_id: str, fecha_dia: date, umbral_min: int):
     _, indicadores, _ = generar_reloj(
-        df, maquina_id, fecha_dia, umbral_minutos=umbral_min
+        df_base, maquina_id, fecha_dia, umbral_minutos=umbral_min
     )
-    total_contador = contador_total_utilizado(df, maquina_id, fecha_dia)
+    total_contador = contador_total_utilizado(df_base, maquina_id, fecha_dia)
     return {
         "Fecha": fecha_dia,
         "Total disponible (min)": indicadores["total_disponible"],
@@ -231,44 +250,50 @@ def resumen_solo(fecha_dia):
     }
 
 if st.button("Generar gráfico(s)", type="primary", use_container_width=True):
-    st.caption(f"Máquina seleccionada: **{maquina_nombre}**  ·  ID: `{maquina_id}`")
-    resumen = []
+    # Recorremos cada máquina seleccionada
+    for maquina_nombre, maquina_id in maquinas_seleccionadas:
+        st.caption(f"Máquina seleccionada: **{maquina_nombre}**  ·  ID: `{maquina_id}`")
+        resumen = []
 
-    for f in fechas_seleccionadas:
-        if not modo_multiple or mostrar_detalle:
-            st.subheader(f"📅 Día {f}")
-            res = render_dia(f)
-            resumen.append(res)
-            st.divider()
-        else:
-            res = resumen_solo(f)
-            resumen.append(res)
+        # Recorremos fechas
+        for f in fechas_seleccionadas:
+            if (not modo_multiple_fechas) or mostrar_detalle:
+                st.subheader(f"📅 {maquina_nombre} – Día {f}")
+                res = render_dia(df, maquina_id, maquina_nombre, f, umbral_min)
+                resumen.append(res)
+                st.divider()
+            else:
+                res = resumen_solo(df, maquina_id, f, umbral_min)
+                resumen.append(res)
 
-    if len(resumen) > 1:
-        st.subheader("📈 Resumen de días seleccionados")
-        df_res = pd.DataFrame(resumen).sort_values("Fecha")
-        st.dataframe(df_res, use_container_width=True)
+        # Resumen y gráfico histórico por máquina
+        if len(resumen) > 1:
+            st.subheader(f"📈 Resumen de días seleccionados – {maquina_nombre}")
+            df_res = pd.DataFrame(resumen).sort_values("Fecha")
+            st.dataframe(df_res, use_container_width=True)
 
-        # 📉 Gráfico histórico (% Perdido)
-        st.markdown("#### 📉 Histórico de % Perdido")
-        labels = df_res["Fecha"].astype(str).tolist()
-        x = range(len(labels))
+            # 📉 Gráfico histórico (% Perdido) para ESTA máquina
+            st.markdown(f"#### 📉 Histórico de % Perdido – {maquina_nombre}")
+            labels = df_res["Fecha"].astype(str).tolist()
+            x = range(len(labels))
 
-        fig, ax = plt.subplots(figsize=(8, 3))
-        ax.plot(x, df_res["%_Perdido"], marker="o", linewidth=2)
-        ax.set_xlabel("Fecha")
-        ax.set_ylabel("% Perdido")
-        ax.set_ylim(bottom=0, top=df_res["%_Perdido"].max() * 2 if len(df_res) else 1)
-        ax.set_xticks(list(x))
-        ax.set_xticklabels(labels, rotation=45, ha="right")
-        ax.grid(True, alpha=0.3)
+            fig, ax = plt.subplots(figsize=(8, 3))
+            ax.plot(x, df_res["%_Perdido"], marker="o", linewidth=2)
+            ax.set_xlabel("Fecha")
+            ax.set_ylabel("% Perdido")
+            ax.set_ylim(bottom=0, top=df_res["%_Perdido"].max() * 2 if len(df_res) else 1)
+            ax.set_xticks(list(x))
+            ax.set_xticklabels(labels, rotation=45, ha="right")
+            ax.grid(True, alpha=0.3)
 
-        # Etiquetas (fuente 7 y margen 7% del máximo)
-        for i, y in enumerate(df_res["%_Perdido"]):
-            ax.text(
-                i, y + (df_res["%_Perdido"].max() * 0.07),
-                f"{y:.2f}%",
-                ha="center", va="bottom", fontsize=7, fontweight="bold"
-            )
+            # Etiquetas (fuente 7 y margen 7% del máximo)
+            y_max = df_res["%_Perdido"].max() if len(df_res) else 0
+            bump = y_max * 0.07 if y_max > 0 else 0.1
+            for i, y in enumerate(df_res["%_Perdido"]):
+                ax.text(
+                    i, y + bump,
+                    f"{y:.2f}%",
+                    ha="center", va="bottom", fontsize=7, fontweight="bold"
+                )
 
-        st.pyplot(fig, use_container_width=True)
+            st.pyplot(fig, use_container_width=True)
