@@ -151,7 +151,7 @@ def fmt_hms(td: pd.Timedelta):
 # ===== Helper: suma del contador (Parcial > 0) en el turno seleccionado =====
 def contador_total_utilizado(df_base: pd.DataFrame, maquina_id: str, fecha_dia, turno: str) -> float:
     # límites del turno desde el motor (evita duplicar lógica)
-    _fig, indicadores, _gaps = generar_reloj(df_base, maquina_id, fecha_dia, umbral_minutos=umbral_min, turno=turno, turno=turno)
+    _fig, indicadores, _gaps = generar_reloj(df_base, maquina_id, fecha_dia, umbral_minutos=umbral_min, turno=turno)
     inicio = indicadores.get("inicio")
     fin = indicadores.get("fin")
     if inicio is None or fin is None:
