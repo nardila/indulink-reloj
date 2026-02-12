@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import date, datetime, timedelta
-from reloj_circular import generar_reloj
+from reloj_circular import generar_reloj, DEFAULT_TURNOS
 import matplotlib.pyplot as plt
 
 # =========================================================
@@ -131,6 +131,13 @@ else:
     if not fechas_seleccionadas:
         st.stop()
 
+
+# ---------------- Turnos ----------------
+turnos_disponibles = list(DEFAULT_TURNOS.keys())
+turnos_seleccionados = st.multiselect("Turnos", options=turnos_disponibles, default=["Mañana"])
+if not turnos_seleccionados:
+    st.stop()
+
 umbral_min = st.number_input(
     "Umbral de pausa no planificada (min)",
     min_value=1, max_value=30, value=3, step=1
@@ -142,20 +149,20 @@ def fmt_hms(td: pd.Timedelta):
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 # ===== Helper: suma del contador (Parcial > 0) en el turno seleccionado =====
-def contador_total_utilizado(df_base: pd.DataFrame, maquina_id: str, fecha_dia) -> float:
-    # límites del turno
-    weekday = fecha_dia.weekday()  # 0=lunes ... 4=viernes
-    inicio = datetime.combine(fecha_dia, datetime.strptime("06:00", "%H:%M").time())
-    fin = datetime.combine(fecha_dia, datetime.strptime("16:00", "%H:%M").time()) if weekday < 4 else \
-          datetime.combine(fecha_dia, datetime.strptime("15:00", "%H:%M").time())
-
-    d = df_base[(df_base["Id Equipo"] == maquina_id) &
-                (df_base["Fecha"].dt.date == fecha_dia)].copy()
-    if d.empty:
+def contador_total_utilizado(df_base: pd.DataFrame, maquina_id: str, fecha_dia, turno: str) -> float:
+    # límites del turno desde el motor (evita duplicar lógica)
+    _fig, indicadores, _gaps = generar_reloj(df_base, maquina_id, fecha_dia, umbral_minutos=umbral_min, turno=turno, turno=turno)
+    inicio = indicadores.get("inicio")
+    fin = indicadores.get("fin")
+    if inicio is None or fin is None:
         return 0.0
 
+    d = df_base[(df_base["Id Equipo"] == maquina_id)].copy()
+    d = d.dropna(subset=["Fecha"])
     # recorte estricto al turno
     d = d[(d["Fecha"] >= inicio) & (d["Fecha"] <= fin)]
+    if d.empty:
+        return 0.0
 
     # localizar columna 'Parcial' de forma robusta
     parcial_col = None
@@ -169,10 +176,10 @@ def contador_total_utilizado(df_base: pd.DataFrame, maquina_id: str, fecha_dia) 
     parc = pd.to_numeric(d[parcial_col], errors="coerce").fillna(0)
     return float(parc[parc > 0].sum())
 
-def render_dia(df_base: pd.DataFrame, maquina_id: str, maquina_nombre: str, fecha_dia: date, umbral_min: int):
+def render_dia(df_base: pd.DataFrame, maquina_id: str, maquina_nombre: str, fecha_dia: date, umbral_min: int, turno: str):
     # generar_reloj recibe el ID de equipo
     fig, indicadores, lista_gaps = generar_reloj(
-        df_base, maquina_id, fecha_dia, umbral_minutos=umbral_min
+        df_base, maquina_id, fecha_dia, umbral_minutos=umbral_min, turno=turno
     )
     st.pyplot(fig, use_container_width=True)
 
@@ -216,18 +223,19 @@ def render_dia(df_base: pd.DataFrame, maquina_id: str, maquina_nombre: str, fech
     st.download_button(
         "📥 Descargar detalle (Excel)",
         data=excel_bytes,
-        file_name=f"tiempos_muertos_{maquina_nombre}_{fecha_dia}.xlsx",
+        file_name=f"tiempos_muertos_{maquina_nombre}_{turno}_{fecha_dia}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
     # === FIN EXPORTAR A EXCEL ===
 
     # 🔢 Contador total utilizado (Parcial > 0)
-    total_contador = contador_total_utilizado(df_base, maquina_id, fecha_dia)
+    total_contador = contador_total_utilizado(df_base, maquina_id, fecha_dia, turno)
 
     # Devolvemos todos los campos para el resumen consolidado
     return {
         "Fecha": fecha_dia,
+        "Turno": turno,
         "Total disponible (min)": indicadores["total_disponible"],
         "Pausas programadas (min)": indicadores["inutilizado_programado"],
         "No programadas (min)": indicadores["perdido_no_programado"],
@@ -235,65 +243,68 @@ def render_dia(df_base: pd.DataFrame, maquina_id: str, maquina_nombre: str, fech
         "Contador total (parcial>0)": total_contador,
     }
 
-def resumen_solo(df_base: pd.DataFrame, maquina_id: str, fecha_dia: date, umbral_min: int):
+def resumen_solo(df_base: pd.DataFrame, maquina_id: str, fecha_dia: date, umbral_min: int, turno: str):
     _, indicadores, _ = generar_reloj(
-        df_base, maquina_id, fecha_dia, umbral_minutos=umbral_min
+        df_base, maquina_id, fecha_dia, umbral_minutos=umbral_min, turno=turno
     )
-    total_contador = contador_total_utilizado(df_base, maquina_id, fecha_dia)
+    total_contador = contador_total_utilizado(df_base, maquina_id, fecha_dia, turno)
     return {
         "Fecha": fecha_dia,
+        "Turno": turno,
         "Total disponible (min)": indicadores["total_disponible"],
         "Pausas programadas (min)": indicadores["inutilizado_programado"],
         "No programadas (min)": indicadores["perdido_no_programado"],
         "%_Perdido": indicadores["porcentaje_perdido"],
         "Contador total (parcial>0)": total_contador,
     }
+
 
 if st.button("Generar gráfico(s)", type="primary", use_container_width=True):
     # Recorremos cada máquina seleccionada
     for maquina_nombre, maquina_id in maquinas_seleccionadas:
-        st.caption(f"Máquina seleccionada: **{maquina_nombre}**  ·  ID: `{maquina_id}`")
-        resumen = []
+        # Recorremos cada turno seleccionado
+        for turno in turnos_seleccionados:
+            st.caption(f"Máquina seleccionada: **{maquina_nombre}** · Turno: **{turno}** · ID: `{maquina_id}`")
+            resumen = []
 
-        # Recorremos fechas
-        for f in fechas_seleccionadas:
-            if (not modo_multiple_fechas) or mostrar_detalle:
-                st.subheader(f"📅 {maquina_nombre} – Día {f}")
-                res = render_dia(df, maquina_id, maquina_nombre, f, umbral_min)
-                resumen.append(res)
-                st.divider()
-            else:
-                res = resumen_solo(df, maquina_id, f, umbral_min)
-                resumen.append(res)
+            # Recorremos fechas
+            for f in fechas_seleccionadas:
+                if (not modo_multiple_fechas) or mostrar_detalle:
+                    st.subheader(f"📅 {maquina_nombre} – Turno {turno} – Día {f}")
+                    res = render_dia(df, maquina_id, maquina_nombre, f, umbral_min, turno)
+                    resumen.append(res)
+                    st.divider()
+                else:
+                    res = resumen_solo(df, maquina_id, f, umbral_min, turno)
+                    resumen.append(res)
 
-        # Resumen y gráfico histórico por máquina
-        if len(resumen) > 1:
-            st.subheader(f"📈 Resumen de días seleccionados – {maquina_nombre}")
-            df_res = pd.DataFrame(resumen).sort_values("Fecha")
-            st.dataframe(df_res, use_container_width=True)
+            # Resumen y gráfico histórico por máquina+turno
+            if len(resumen) > 0:
+                st.subheader(f"📈 Resumen – {maquina_nombre} – Turno {turno}")
+                df_res = pd.DataFrame(resumen).sort_values("Fecha")
+                st.dataframe(df_res, use_container_width=True)
 
-            # 📉 Gráfico histórico (% Perdido) para ESTA máquina
-            st.markdown(f"#### 📉 Histórico de % Perdido – {maquina_nombre}")
-            labels = df_res["Fecha"].astype(str).tolist()
-            x = range(len(labels))
+                if len(df_res) > 1:
+                    st.markdown(f"#### 📉 Histórico de % Perdido – {maquina_nombre} – Turno {turno}")
+                    labels = df_res["Fecha"].astype(str).tolist()
+                    x = range(len(labels))
 
-            fig, ax = plt.subplots(figsize=(8, 3))
-            ax.plot(x, df_res["%_Perdido"], marker="o", linewidth=2)
-            ax.set_xlabel("Fecha")
-            ax.set_ylabel("% Perdido")
-            ax.set_ylim(bottom=0, top=df_res["%_Perdido"].max() * 2 if len(df_res) else 1)
-            ax.set_xticks(list(x))
-            ax.set_xticklabels(labels, rotation=45, ha="right")
-            ax.grid(True, alpha=0.3)
+                    fig, ax = plt.subplots(figsize=(8, 3))
+                    ax.plot(x, df_res["%_Perdido"], marker="o", linewidth=2)
+                    ax.set_xlabel("Fecha")
+                    ax.set_ylabel("% Perdido")
+                    ymax = float(df_res["%_Perdido"].max()) if len(df_res) else 1.0
+                    ax.set_ylim(bottom=0, top=max(1.0, ymax * 2))
+                    ax.set_xticks(list(x))
+                    ax.set_xticklabels(labels, rotation=45, ha="right")
+                    ax.grid(True, alpha=0.3)
 
-            # Etiquetas (fuente 7 y margen 7% del máximo)
-            y_max = df_res["%_Perdido"].max() if len(df_res) else 0
-            bump = y_max * 0.07 if y_max > 0 else 0.1
-            for i, y in enumerate(df_res["%_Perdido"]):
-                ax.text(
-                    i, y + bump,
-                    f"{y:.2f}%",
-                    ha="center", va="bottom", fontsize=7, fontweight="bold"
-                )
+                    bump = ymax * 0.07 if ymax > 0 else 0.1
+                    for i, y in enumerate(df_res["%_Perdido"]):
+                        ax.text(
+                            i, y + bump,
+                            f"{y:.2f}%",
+                            ha="center", va="bottom", fontsize=7, fontweight="bold"
+                        )
 
-            st.pyplot(fig, use_container_width=True)
+                    st.pyplot(fig, use_container_width=True)
