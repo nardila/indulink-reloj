@@ -1,12 +1,25 @@
 import io
+from datetime import date, datetime, timedelta
+
 import pandas as pd
 import streamlit as st
-import matplotlib.pyplot as plt
-from datetime import datetime
-from reloj_circular import generar_reloj, generar_reloj_multi
 
+from reloj_circular import generar_reloj
+
+
+# =========================================================
+# Config general
+# =========================================================
 st.set_page_config(page_title="Reloj Circular de Tiempos Muertos", layout="wide")
 
+SHEET_EXPORT_URL = (
+    "https://docs.google.com/spreadsheets/d/"
+    "1clzNg0YblSQVvpWlWqeAwHKYiTyKcv-meWaI1RILAFo/export?format=xlsx"
+)
+
+# =========================================================
+# Mapeo nombre ↔ ID de máquina (para UI amigable)
+# =========================================================
 MACHINE_NAME_TO_ID = {
     "Seccionadora": "4C4F686CDDA0",
     "Centro de Mecanizado 1": "84EA676CDDA0",
@@ -16,231 +29,260 @@ MACHINE_NAME_TO_ID = {
 }
 ID_TO_MACHINE_NAME = {v: k for k, v in MACHINE_NAME_TO_ID.items()}
 
-# Grupos de máquinas que suelen operar alternadas con el mismo equipo
-MACHINE_GROUPS = {
-    "Pegadoras (equipo)": ["3C75A0C964EC", "8C6EA51FB608"],
-    "Centros de Mecanizado (equipo)": ["84EA676CDDA0", "98D1676CDDA0"],
-}
+# =========================================================
+# Carga de datos
+# =========================================================
+@st.cache_data(show_spinner=False)
+def cargar_excel_desde_sheet(url: str) -> pd.DataFrame:
+    df = pd.read_excel(url, sheet_name=0, engine="openpyxl", header=1)
+    return df
 
+def normalizar_columnas(df: pd.DataFrame) -> pd.DataFrame:
+    df.columns = [str(c).strip() for c in df.columns]
+    rename_map = {}
+    for c in df.columns:
+        cl = (
+            c.lower()
+            .replace("á", "a")
+            .replace("é", "e")
+            .replace("í", "i")
+            .replace("ó", "o")
+            .replace("ú", "u")
+        )
+        if cl in {"fecha", "timestamp", "time"}:
+            rename_map[c] = "Fecha"
+        elif cl in {"id equipo", "id_equipo", "equipo", "maquina", "id"}:
+            rename_map[c] = "Id Equipo"
+        elif cl in {"contador", "count", "k"}:
+            rename_map[c] = "Contador"
+        elif cl in {"parcial", "j"}:
+            rename_map[c] = "Parcial"
+    if rename_map:
+        df = df.rename(columns=rename_map)
 
-def cargar_excel(uploaded_file):
-    df = pd.read_excel(uploaded_file, engine="openpyxl")
-
-    # Ajuste defensivo de columnas esperadas
-    # (mantenemos tu lógica actual lo más intacta posible)
-    if "Fecha" not in df.columns:
-        for c in df.columns:
-            if "fecha" in str(c).lower():
-                df = df.rename(columns={c: "Fecha"})
-                break
-
-    if "Id Equipo" not in df.columns:
-        for c in df.columns:
-            if "equipo" in str(c).lower() or "id equipo" in str(c).lower():
-                df = df.rename(columns={c: "Id Equipo"})
-                break
+    # Validaciones mínimas
+    required = {"Fecha", "Id Equipo"}
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"Error al interpretar columnas: No se encuentran las columnas requeridas: {missing}"
+        )
 
     df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce")
-    df = df.dropna(subset=["Fecha", "Id Equipo"])
+    df = df.dropna(subset=["Fecha"])
     df["Id Equipo"] = df["Id Equipo"].astype(str).str.strip()
+
+    # Si existen, aseguramos numéricos
+    if "Parcial" in df.columns:
+        df["Parcial"] = pd.to_numeric(df["Parcial"], errors="coerce").fillna(0)
+    if "Contador" in df.columns:
+        df["Contador"] = pd.to_numeric(df["Contador"], errors="coerce").fillna(0)
 
     return df
 
+def fmt_hms(td: timedelta) -> str:
+    total_seconds = int(td.total_seconds())
+    if total_seconds < 0:
+        total_seconds = 0
+    h = total_seconds // 3600
+    m = (total_seconds % 3600) // 60
+    s = total_seconds % 60
+    return f"{h:02d}:{m:02d}:{s:02d}"
 
-def contador_total_utilizado(df_base, maquina_id, fecha_dia):
-    # Mantenemos tu lógica, pero permitimos lista (consolidación por grupos)
-    if fecha_dia is None:
-        return 0
+def fmt_percent(x: float) -> str:
+    return f"{x:.2f}%"
 
-    if isinstance(maquina_id, (list, tuple, set)):
-        d = df_base[(df_base["Id Equipo"].isin(list(maquina_id))) &
-                    (df_base["Fecha"].dt.date == fecha_dia)].copy()
-    else:
-        d = df_base[(df_base["Id Equipo"] == maquina_id) &
-                    (df_base["Fecha"].dt.date == fecha_dia)].copy()
+def render_historico_linea(df_resumen: pd.DataFrame):
+    import matplotlib.pyplot as plt
 
-    if d.empty:
-        return 0
+    if df_resumen.empty:
+        st.info("No hay datos para graficar histórico.")
+        return
 
-    # Busca columna "contador total" con heurística existente
-    contador_candidates = [c for c in d.columns if "contador" in str(c).lower() or str(c).strip().upper() == "K"]
-    if contador_candidates:
-        col_k = contador_candidates[0]
-        try:
-            return int(pd.to_numeric(d[col_k], errors="coerce").fillna(0).max())
-        except Exception:
-            return 0
+    df_plot = df_resumen.copy()
+    df_plot = df_plot.sort_values("Fecha")
+    x = df_plot["Fecha"].astype(str).tolist()
+    y = df_plot["% Perdido"].astype(float).tolist()
 
-    return 0
+    max_y = max(y) if y else 0.0
+    y_max = max(0.0, 2.0 * max_y)
 
+    fig = plt.figure(figsize=(10, 4.5))
+    ax = fig.add_subplot(111)
+    ax.plot(x, y, marker="o")
+    ax.set_ylabel("% Perdido")
+    ax.set_xlabel("Fecha")
+    ax.set_ylim(0, y_max)
 
-def render_dia(df_base, maquina_id, maquina_nombre, fecha_dia, umbral_min):
-    st.subheader(f"Día {fecha_dia} · {maquina_nombre}")
+    # etiquetas arriba (fuente 20% más chica)
+    for xi, yi in zip(x, y):
+        ax.text(xi, yi + (y_max * 0.02 if y_max > 0 else 0.5), f"{yi:.2f}%", ha="center", va="bottom", fontsize=10)
 
-    if isinstance(maquina_id, (list, tuple, set)):
-        fig, indicadores, lista_gaps = generar_reloj_multi(
-            df_base, list(maquina_id), fecha_dia, umbral_minutos=umbral_min, etiqueta=maquina_nombre
-        )
-    else:
-        fig, indicadores, lista_gaps = generar_reloj(
-            df_base, maquina_id, fecha_dia, umbral_minutos=umbral_min
-        )
-
+    plt.xticks(rotation=45, ha="right")
+    plt.tight_layout()
     st.pyplot(fig, clear_figure=True)
 
-    total_contador = contador_total_utilizado(df_base, maquina_id, fecha_dia)
+def construir_excel_export(df_detalles_por_dia: list, df_resumen: pd.DataFrame) -> bytes:
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        if not df_resumen.empty:
+            df_resumen.to_excel(writer, index=False, sheet_name="Resumen")
 
-    col_a, col_b, col_c, col_d, col_e = st.columns(5)
-    col_a.metric("Disponible total (min)", f"{indicadores['total_disponible']:.2f}")
-    col_b.metric("Paradas programadas (min)", f"{indicadores['inutilizado_programado']:.2f}")
-    col_c.metric("Paradas no programadas (min)", f"{indicadores['perdido_no_programado']:.2f}")
-    col_d.metric("% Perdido", f"{indicadores['porcentaje_perdido']:.2f}%")
-    col_e.metric("Contador total (K)", f"{total_contador}")
+        for item in df_detalles_por_dia:
+            sheet = item["sheet_name"]
+            df_det = item["df_detalle"]
+            df_det.to_excel(writer, index=False, sheet_name=sheet[:31])
 
-    df_gaps = pd.DataFrame(lista_gaps)
-    if not df_gaps.empty:
-        # Formato HH:MM:SS sin "days"
-        df_gaps["Duracion"] = df_gaps["Duracion"].apply(
-            lambda td: f"{int(td.total_seconds()//3600):02d}:{int((td.total_seconds()%3600)//60):02d}:{int(td.total_seconds()%60):02d}"
-        )
-        st.dataframe(df_gaps[["Inicio", "Fin", "Duracion"]], use_container_width=True)
+    return output.getvalue()
 
-    return indicadores, total_contador, df_gaps
+# =========================================================
+# UI
+# =========================================================
+st.title("Reloj Circular de Tiempos Muertos")
 
-
-st.title("📊 Reloj Circular de Tiempos Muertos")
-
-uploaded_file = st.file_uploader("Subí el archivo Excel de producción", type=["xlsx"])
-
-if uploaded_file is None:
-    st.stop()
+with st.spinner("Cargando datos desde Google Sheets..."):
+    df_raw = cargar_excel_desde_sheet(SHEET_EXPORT_URL)
 
 try:
-    df_base = cargar_excel(uploaded_file)
+    df_base = normalizar_columnas(df_raw)
 except Exception as e:
-    st.error(f"Error al interpretar columnas: {e}")
+    st.error(str(e))
     st.stop()
 
-fechas_disponibles = sorted(df_base["Fecha"].dt.date.dropna().unique())
-if len(fechas_disponibles) == 0:
-    st.warning("No se detectaron fechas válidas en el archivo.")
-    st.stop()
+# Máquina (single o múltiple)
+st.subheader("Parámetros")
 
-col_top1, col_top2, col_top3 = st.columns([1.2, 1.0, 2.2])
+colA, colB, colC = st.columns([1.2, 1.2, 1.2])
 
-with col_top1:
-    st.subheader("Máquina")
+with colA:
     multi_maquinas = st.toggle("Seleccionar múltiples máquinas", value=False)
 
-    if not multi_maquinas:
-        maquina_nombre = st.selectbox("Máquina", list(MACHINE_NAME_TO_ID.keys()))
-        maquinas_seleccionadas = [(maquina_nombre, MACHINE_NAME_TO_ID[maquina_nombre])]
-    else:
-        maquinas_seleccionadas = []
-        selec = st.multiselect("Máquinas", list(MACHINE_NAME_TO_ID.keys()), default=list(MACHINE_NAME_TO_ID.keys()))
-        for mname in selec:
-            maquinas_seleccionadas.append((mname, MACHINE_NAME_TO_ID[mname]))
-
-    # NUEVO: consolidación por grupos (mismo equipo)
-    modo_consolidar_grupos = st.toggle(
-        "Consolidar por grupos (mismo equipo)",
-        value=False,
-        help="Calcula pérdidas cuando ninguna máquina del grupo reporta actividad. Si no es el mismo equipo, no lo uses."
-    )
-
-with col_top2:
-    st.subheader("Fechas")
+with colB:
     multi_fechas = st.toggle("Seleccionar múltiples fechas", value=False)
 
-    if not multi_fechas:
-        fecha = st.selectbox("Fecha", fechas_disponibles, index=len(fechas_disponibles) - 1)
-        fechas_seleccionadas = [fecha]
-    else:
-        fechas_seleccionadas = st.multiselect("Fechas (podés elegir varias)", fechas_disponibles, default=fechas_disponibles[-3:])
+with colC:
+    umbral_min = st.number_input("Umbral de pausa no planificada (min)", min_value=0.0, value=3.0, step=0.5)
 
-with col_top3:
-    st.subheader("Parámetros")
-    umbral_min = st.number_input("Umbral de pausa no planificada (min)", min_value=1, max_value=120, value=3, step=1)
-    mostrar_detalle = st.toggle(
-        "Mostrar gráficos individuales (solo aplica si hay múltiples fechas)",
-        value=True,
-        help="Si lo apagás, podés mostrar solo el resumen agregado sin renderizar todos los polares."
+# máquinas disponibles (por dataset)
+maquinas_disponibles = sorted(df_base["Id Equipo"].dropna().unique().tolist())
+nombres_disponibles = [ID_TO_MACHINE_NAME.get(mid, mid) for mid in maquinas_disponibles]
+
+if multi_maquinas:
+    sel_maquinas_nombres = st.multiselect(
+        "Máquinas (podés elegir varias)",
+        options=nombres_disponibles,
+        default=[nombres_disponibles[0]] if nombres_disponibles else [],
     )
+    sel_maquinas_ids = [MACHINE_NAME_TO_ID.get(n, n) for n in sel_maquinas_nombres]
+else:
+    sel_maquina_nombre = st.selectbox("Máquina", options=nombres_disponibles)
+    sel_maquinas_ids = [MACHINE_NAME_TO_ID.get(sel_maquina_nombre, sel_maquina_nombre)]
 
-st.divider()
+# fechas disponibles
+fechas_disponibles = sorted(df_base["Fecha"].dt.date.dropna().unique().tolist())
 
-if st.button("Generar gráfico(s)", use_container_width=True):
-    if not maquinas_seleccionadas:
-        st.warning("Seleccioná al menos una máquina.")
+if multi_fechas:
+    sel_fechas = st.multiselect("Fechas (podés elegir varias)", options=fechas_disponibles, default=fechas_disponibles[:1])
+else:
+    sel_fecha = st.selectbox("Fecha", options=fechas_disponibles)
+    sel_fechas = [sel_fecha]
+
+# Turnos
+st.subheader("Turnos")
+turnos_sel = st.multiselect(
+    "Seleccioná uno o más turnos",
+    options=["Mañana", "Tarde"],
+    default=["Mañana"],
+)
+
+btn = st.button("Generar gráfico(s)", type="primary", use_container_width=True)
+
+if btn:
+    if not sel_maquinas_ids or not sel_fechas:
+        st.warning("Elegí al menos una máquina y una fecha.")
         st.stop()
-    if not fechas_seleccionadas:
-        st.warning("Seleccioná al menos una fecha.")
-        st.stop()
 
-    fechas_ordenadas = sorted(fechas_seleccionadas)
+    resumen_rows = []
+    detalles_excel = []
 
-    # Armamos objetivos de cálculo (máquinas individuales o grupos)
-    objetivos = []  # (label, maquina_id_o_lista)
-    if modo_consolidar_grupos:
-        ids_sel = [mid for _, mid in maquinas_seleccionadas]
-        for gname, gids in MACHINE_GROUPS.items():
-            if any(mid in gids for mid in ids_sel):
-                objetivos.append((gname, gids))
-        ids_en_grupos = set([x for _, gids in objetivos for x in gids])
-        for mname, mid in maquinas_seleccionadas:
-            if mid not in ids_en_grupos:
-                objetivos.append((mname, mid))
-    else:
-        objetivos = [(mname, mid) for mname, mid in maquinas_seleccionadas]
+    for maquina_id in sel_maquinas_ids:
+        nombre_maquina = ID_TO_MACHINE_NAME.get(maquina_id, maquina_id)
 
-    for maquina_nombre, maquina_id in objetivos:
-        st.header(f"🏭 {maquina_nombre}")
+        for fecha_dia in sel_fechas:
+            for turno in turnos_sel:
+                st.markdown(f"### {nombre_maquina} — Día {fecha_dia} — Turno {turno}")
 
-        resumen_rows = []
-        detalles_para_export = []
+                fig, indicadores, lista_gaps = generar_reloj(
+                    df_base,
+                    maquina_id,
+                    fecha_dia,
+                    umbral_minutos=float(umbral_min),
+                    turno=turno,
+                )
 
-        for f in fechas_ordenadas:
-            if (not multi_fechas) or mostrar_detalle:
-                indicadores, total_k, df_gaps = render_dia(df_base, maquina_id, maquina_nombre, f, umbral_min)
-            else:
-                # Si no renderizamos el polar, igual calculamos indicadores
-                if isinstance(maquina_id, (list, tuple, set)):
-                    _fig, indicadores, _gaps = generar_reloj_multi(df_base, list(maquina_id), f, umbral_minutos=umbral_min, etiqueta=maquina_nombre)
+                c1, c2, c3, c4, c5 = st.columns(5)
+                c1.metric("Tiempo disponible (min)", f"{indicadores['total_disponible']:.2f}")
+                c2.metric("Programado (min)", f"{indicadores['inutilizado_programado']:.2f}")
+                c3.metric("No programado (min)", f"{indicadores['perdido_no_programado']:.2f}")
+                c4.metric("% Perdido", f"{indicadores['porcentaje_perdido']:.2f}%")
+                c5.metric("Contador total", f"{indicadores.get('contador_total', 0)}")
+
+                st.pyplot(fig, clear_figure=True)
+
+                df_gaps = pd.DataFrame(lista_gaps)
+                if not df_gaps.empty:
+                    # asegurar formato HH:MM:SS (sin "0 days")
+                    if "Duracion" in df_gaps.columns:
+                        # ya viene como HH:MM:SS
+                        pass
+                    st.dataframe(df_gaps, use_container_width=True)
                 else:
-                    _fig, indicadores, _gaps = generar_reloj(df_base, maquina_id, f, umbral_minutos=umbral_min)
-                total_k = contador_total_utilizado(df_base, maquina_id, f)
-                df_gaps = pd.DataFrame(_gaps)
+                    st.info("No se detectaron tiempos muertos según el umbral y reglas.")
 
-            resumen_rows.append({
-                "Fecha": f,
-                "Disponible_total_min": indicadores["total_disponible"],
-                "Paradas_programadas_min": indicadores["inutilizado_programado"],
-                "Paradas_no_programadas_min": indicadores["perdido_no_programado"],
-                "%_Perdido": indicadores["porcentaje_perdido"],
-                "Contador_total_K": total_k
-            })
+                resumen_rows.append(
+                    {
+                        "Máquina": nombre_maquina,
+                        "Id Equipo": maquina_id,
+                        "Fecha": fecha_dia,
+                        "Turno": turno,
+                        "Tiempo disponible (min)": float(indicadores["total_disponible"]),
+                        "Programado (min)": float(indicadores["inutilizado_programado"]),
+                        "No programado (min)": float(indicadores["perdido_no_programado"]),
+                        "% Perdido": float(indicadores["porcentaje_perdido"]),
+                        "Contador total": int(indicadores.get("contador_total", 0)),
+                    }
+                )
 
-            if df_gaps is not None and not df_gaps.empty:
-                df_gaps2 = df_gaps.copy()
-                df_gaps2.insert(0, "Fecha", f)
-                detalles_para_export.append(df_gaps2)
+                # Excel detalle
+                sheet_name = f"{nombre_maquina}_{fecha_dia}_{turno}".replace(" ", "_")
+                detalles_excel.append(
+                    {
+                        "sheet_name": sheet_name,
+                        "df_detalle": df_gaps,
+                    }
+                )
 
-        df_resumen = pd.DataFrame(resumen_rows)
-        st.subheader("Resumen de días seleccionados")
-        st.dataframe(df_resumen, use_container_width=True)
+    df_resumen = pd.DataFrame(resumen_rows)
 
-        # Export resumen + detalle
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            df_resumen.to_excel(writer, index=False, sheet_name="Resumen")
-            if detalles_para_export:
-                df_det = pd.concat(detalles_para_export, ignore_index=True)
-                df_det.to_excel(writer, index=False, sheet_name="Detalle gaps")
+    st.divider()
+    st.subheader("Resumen de días seleccionados")
+    st.dataframe(df_resumen, use_container_width=True)
 
+    st.subheader("Histórico de % perdido")
+    # Para histórico: agrupamos por fecha en orden cronológico SOLO con fechas existentes
+    df_hist = df_resumen[["Fecha", "% Perdido"]].copy()
+    df_hist = df_hist.groupby("Fecha", as_index=False).mean(numeric_only=True)
+    render_historico_linea(df_hist)
+
+    # Export Excel
+    try:
+        xlsx_bytes = construir_excel_export(detalles_excel, df_resumen)
         st.download_button(
-            "⬇️ Descargar Excel (Resumen + Detalle)",
-            data=output.getvalue(),
-            file_name=f"reloj_{maquina_nombre.replace(' ', '_')}.xlsx",
+            "Descargar Excel",
+            data=xlsx_bytes,
+            file_name="reloj_tiempos_muertos.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
+            use_container_width=True,
         )
+    except Exception as e:
+        st.error(f"No se pudo generar Excel: {e}")
